@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.venv/
+
+# Build / packaging
+build/
+dist/
+
+# Agent scratch
+.augment/
