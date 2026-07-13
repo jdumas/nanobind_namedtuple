@@ -12,11 +12,16 @@ def test_add_returns_sum():
     assert nbnt_example_hello.add(2, 3) == 5
 
 
-def test_color_from_cpp_is_plain_tuple():
+def test_color_from_cpp_is_registered_class():
     value = nbnt_example_hello.make_color(1.0, 2.0, 3.0)
-    assert type(value) is tuple
+    assert type(value) is nbnt_example_hello.Color
+    assert isinstance(value, tuple)
     assert value == (1.0, 2.0, 3.0)
     assert len(value) == 3
+    assert value.r == 1.0
+    assert value.g == 2.0
+    assert value.b == 3.0
+    assert nbnt_example_hello.Color._fields == ("r", "g", "b")
 
 
 def test_color_round_trip_from_python_tuple():
@@ -25,16 +30,28 @@ def test_color_round_trip_from_python_tuple():
 
 def test_point_round_trip_with_string_field():
     value = nbnt_example_hello.make_point(4, 5, "hello")
-    assert type(value) is tuple
+    assert type(value) is nbnt_example_hello.Point
     assert value == (4, 5, "hello")
+    assert value.label == "hello"
     assert nbnt_example_hello.point_label((7, 8, "world")) == "world"
+
+
+def test_point_has_trailing_default():
+    assert nbnt_example_hello.Point._field_defaults == {"label": ""}
+    made = nbnt_example_hello.Point(1, 2)
+    assert made == (1, 2, "")
 
 
 def test_empty_record_round_trip():
     value = nbnt_example_hello.make_empty()
-    assert type(value) is tuple
+    assert type(value) is nbnt_example_hello.Empty
     assert value == ()
+    assert nbnt_example_hello.Empty._fields == ()
     assert nbnt_example_hello.take_empty(()) is True
+
+
+def test_registered_class_module_is_example():
+    assert nbnt_example_hello.Color.__module__ == nbnt_example_hello.__name__
 
 
 @pytest.mark.parametrize(

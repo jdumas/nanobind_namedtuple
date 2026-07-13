@@ -4,40 +4,30 @@
 //
 // This header provides:
 //   * ``nbnt::field<&T::member>("name")`` — compile-time descriptor for a
-//     single field of a C++ record.
+//     single field of a C++ record, with an optional ``.default_(value)``.
 //   * ``NB_NT_FIELD(name)`` / ``NB_NAMED_TUPLE(Type, "Name", ...)`` /
 //     ``NB_NAMED_TUPLE_EX(Type, "Name", ...)`` — declaration macros that
-//     emit a ``nanobind::detail::type_caster<Type>`` specialization.
-//
-// The caster round-trips values through plain Python ``tuple`` objects
-// with an exact arity check on the input side.
+//     emit both a ``nbnt::detail::traits<Type>`` specialization and a
+//     ``nanobind::detail::type_caster<Type>`` specialization.
+//   * ``nbnt::bind_namedtuple<T>(m)`` — module-side call that builds the
+//     Python namedtuple class via ``collections.namedtuple()`` and
+//     publishes it to a per-``T`` slot with publish-exactly-once
+//     semantics (first-registration wins).
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <tuple>
 #include <type_traits>
 #include <utility>
 
 #include <nanobind/nanobind.h>
 
+#if defined(NB_FREE_THREADED)
+#include <atomic>
+#endif
+
 namespace nbnt {
-
-// Compile-time descriptor for a single named field of a record.
-//
-// ``MemberPtr`` is a non-type template parameter carrying the pointer to
-// the underlying C++ member. ``name`` holds the Python-visible name.
-// ``default_`` is preserved for future validation by ``bind_namedtuple``
-// and is ignored by the caster path.
-template <auto MemberPtr> struct field {
-    static constexpr auto member_ptr = MemberPtr;
-    const char *name = nullptr;
-
-    constexpr explicit field(const char *n) noexcept : name(n) {}
-
-    template <typename V> constexpr field default_(V &&) const noexcept {
-        return *this;
-    }
-};
 
 namespace detail {
 
@@ -49,14 +39,193 @@ template <typename R, typename C> R value_of_member_ptr(R C::*);
 
 template <auto MemberPtr> using value_of_t = decltype(value_of_member_ptr(MemberPtr));
 
+} // namespace detail
+
+// Compile-time descriptor for a single named field of a record.
+//
+// ``MemberPtr`` is a non-type template parameter carrying the pointer to
+// the underlying C++ member. ``HasDefault`` encodes whether a default value
+// was supplied via ``.default_(...)``. ``name`` holds the Python-visible
+// name and ``default_value`` (present only when ``HasDefault``) holds the
+// value forwarded to ``collections.namedtuple``'s ``defaults=`` argument.
+template <auto MemberPtr, bool HasDefault = false> struct field {
+    using value_type = detail::value_of_t<MemberPtr>;
+    static constexpr auto member_ptr = MemberPtr;
+    static constexpr bool has_default_v = HasDefault;
+
+    const char *name = nullptr;
+    std::optional<value_type> default_value;
+
+    constexpr explicit field(const char *n) noexcept : name(n) {}
+    constexpr field(
+        const char *n, std::optional<value_type> d
+    ) noexcept(std::is_nothrow_move_constructible_v<std::optional<value_type>>)
+        : name(n), default_value(std::move(d)) {}
+
+    template <typename V> field<MemberPtr, true> default_(V &&v) const {
+        return field<MemberPtr, true>(
+            name, std::optional<value_type>(std::in_place, std::forward<V>(v))
+        );
+    }
+};
+
+namespace detail {
+
+// Per-``T`` traits, specialized by ``NB_NAMED_TUPLE_EX``.
+template <typename T> struct traits;
+
+// Per-``T`` published class slot. Storage type varies by build:
+//   * GIL builds and free-threaded builds with ``std::atomic_ref``: plain
+//     ``PyObject *``. Under the GIL the publication is a plain
+//     check-and-store; on free-threaded builds with ``std::atomic_ref`` the
+//     publication is a create-once CAS through the atomic_ref, but the
+//     storage stays plain so the hot-path relaxed load compiles to a plain
+//     load.
+//   * Free-threaded builds without ``std::atomic_ref``: promoted to
+//     ``std::atomic<PyObject *>``.
+#if defined(NB_FREE_THREADED) && !(defined(__cpp_lib_atomic_ref) && __cpp_lib_atomic_ref >= 201806L)
+template <typename T> struct nt_class {
+    inline static std::atomic<PyObject *> cls{nullptr};
+    static_assert(
+        std::atomic<PyObject *>::is_always_lock_free,
+        "std::atomic<PyObject *> must be lock-free on all supported platforms"
+    );
+};
+#else
+template <typename T> struct nt_class {
+    inline static PyObject *cls{nullptr};
+#if defined(NB_FREE_THREADED)
+    static_assert(
+        std::atomic_ref<PyObject *>::is_always_lock_free,
+        "std::atomic_ref<PyObject *> must be lock-free on all supported platforms"
+    );
+#endif
+};
+#endif
+
+// Hot-path load: relaxed on FT, plain read under the GIL.
+template <typename T> inline PyObject *load_nt_cls_hot() noexcept {
+#if defined(NB_FREE_THREADED)
+#if defined(__cpp_lib_atomic_ref) && __cpp_lib_atomic_ref >= 201806L
+    return std::atomic_ref<PyObject *>(nt_class<T>::cls).load(std::memory_order_relaxed);
+#else
+    return nt_class<T>::cls.load(std::memory_order_relaxed);
+#endif
+#else
+    return nt_class<T>::cls;
+#endif
+}
+
+// Cold pre-check load in the publication path: acquire on FT, plain under
+// the GIL. Pairs with the winner's release-store on CAS success.
+template <typename T> inline PyObject *load_nt_cls_cold() noexcept {
+#if defined(NB_FREE_THREADED)
+#if defined(__cpp_lib_atomic_ref) && __cpp_lib_atomic_ref >= 201806L
+    return std::atomic_ref<PyObject *>(nt_class<T>::cls).load(std::memory_order_acquire);
+#else
+    return nt_class<T>::cls.load(std::memory_order_acquire);
+#endif
+#else
+    return nt_class<T>::cls;
+#endif
+}
+
+// Publish ``candidate`` into ``nt_class<T>::cls`` with publish-exactly-once
+// semantics. Returns the winning pointer: on success, ``candidate`` itself;
+// on failure, the pointer another thread published first.
+template <typename T> inline PyObject *publish_nt_cls(PyObject *candidate) noexcept {
+#if defined(NB_FREE_THREADED)
+    PyObject *expected = nullptr;
+#if defined(__cpp_lib_atomic_ref) && __cpp_lib_atomic_ref >= 201806L
+    std::atomic_ref<PyObject *> ref(nt_class<T>::cls);
+    if (ref.compare_exchange_strong(
+            expected, candidate, std::memory_order_release, std::memory_order_acquire
+        ))
+        return candidate;
+    return expected;
+#else
+    if (nt_class<T>::cls.compare_exchange_strong(
+            expected, candidate, std::memory_order_release, std::memory_order_acquire
+        ))
+        return candidate;
+    return expected;
+#endif
+#else
+    if (nt_class<T>::cls == nullptr) {
+        nt_class<T>::cls = candidate;
+        return candidate;
+    }
+    return nt_class<T>::cls;
+#endif
+}
+
 template <typename Fields, std::size_t I> using field_at = std::tuple_element_t<I, Fields>;
 
 template <typename Fields, std::size_t I>
 using field_value_t = value_of_t<field_at<Fields, I>::member_ptr>;
 
+template <typename Fields, std::size_t... I>
+constexpr bool defaults_are_trailing_impl(std::index_sequence<I...>) {
+    bool seen_default = false;
+    bool ok = true;
+    auto check_one = [&](bool has_default) {
+        if (has_default) {
+            seen_default = true;
+        } else if (seen_default) {
+            ok = false;
+        }
+    };
+    (check_one(field_at<Fields, I>::has_default_v), ...);
+    return ok;
+}
+
+template <typename Fields> constexpr bool defaults_are_trailing() {
+    return defaults_are_trailing_impl<Fields>(std::make_index_sequence<std::tuple_size_v<Fields>>{}
+    );
+}
+
+template <typename Fields, std::size_t... I>
+constexpr std::size_t count_defaults_impl(std::index_sequence<I...>) {
+    return (0 + ... + (field_at<Fields, I>::has_default_v ? 1u : 0u));
+}
+
+template <typename Fields> constexpr std::size_t count_defaults() {
+    return count_defaults_impl<Fields>(std::make_index_sequence<std::tuple_size_v<Fields>>{});
+}
+
+// Build the ``defaults`` tuple to hand to ``collections.namedtuple``.
+// The trailing-suffix invariant is enforced by a static_assert in
+// ``bind_namedtuple<T>``, so once we hit the first defaulted field every
+// remaining field is also defaulted and ``.value()`` is safe.
+inline ::nanobind::object make_defaults_tuple() {
+    return ::nanobind::none();
+}
+
+template <typename F0, typename... Rest>
+inline ::nanobind::object make_defaults_tuple_head(const F0 &f0, const Rest &...rest) {
+    if constexpr (F0::has_default_v) {
+        return ::nanobind::make_tuple(
+            ::nanobind::cast(f0.default_value.value()),
+            ::nanobind::cast(rest.default_value.value())...
+        );
+    } else if constexpr (sizeof...(Rest) == 0) {
+        return ::nanobind::none();
+    } else {
+        return make_defaults_tuple_head(rest...);
+    }
+}
+
+template <typename... Fs> inline ::nanobind::object make_defaults_from(const Fs &...fs) {
+    if constexpr (sizeof...(Fs) == 0) {
+        return ::nanobind::none();
+    } else {
+        return make_defaults_tuple_head(fs...);
+    }
+}
+
 template <typename Type, typename Fields, typename Src, std::size_t... I>
 inline bool
-named_tuple_from_cpp_impl(Src &&src, ::nanobind::rv_policy policy, ::nanobind::detail::cleanup_list *cleanup, PyObject *result, std::index_sequence<I...>) noexcept {
+named_tuple_fill_impl(Src &&src, ::nanobind::rv_policy policy, ::nanobind::detail::cleanup_list *cleanup, PyObject *result, std::index_sequence<I...>) noexcept {
     auto set_one = [&](auto index_c) noexcept -> bool {
         constexpr std::size_t Ix = decltype(index_c)::value;
         constexpr auto mp = field_at<Fields, Ix>::member_ptr;
@@ -80,17 +249,36 @@ inline ::nanobind::handle named_tuple_from_cpp(
     Src &&src, ::nanobind::rv_policy policy, ::nanobind::detail::cleanup_list *cleanup
 ) noexcept {
     constexpr std::size_t N = std::tuple_size_v<Fields>;
-    PyObject *result = PyTuple_New(static_cast<Py_ssize_t>(N));
-    if (!result)
-        return {};
-    bool ok = named_tuple_from_cpp_impl<Type, Fields>(
-        std::forward<Src>(src), policy, cleanup, result, std::make_index_sequence<N>{}
-    );
-    if (!ok) {
-        Py_DECREF(result);
+    PyObject *cls = load_nt_cls_hot<Type>();
+    if (!cls) {
+        PyErr_Format(
+            PyExc_RuntimeError,
+            "nanobind_namedtuple: type '%s' has no registered class \u2014 "
+            "call nbnt::bind_namedtuple<T>(m) in NB_MODULE",
+            traits<Type>::class_name
+        );
         return {};
     }
-    return result;
+    if constexpr (N == 0) {
+        (void)src;
+        (void)policy;
+        (void)cleanup;
+        return PyObject_CallObject(cls, nullptr);
+    } else {
+        PyObject *result = PyTuple_New(static_cast<Py_ssize_t>(N));
+        if (!result)
+            return {};
+        bool ok = named_tuple_fill_impl<Type, Fields>(
+            std::forward<Src>(src), policy, cleanup, result, std::make_index_sequence<N>{}
+        );
+        if (!ok) {
+            Py_DECREF(result);
+            return {};
+        }
+        Py_INCREF(cls);
+        Py_SET_TYPE(result, reinterpret_cast<PyTypeObject *>(cls));
+        return result;
+    }
 }
 
 template <typename Type, typename Fields, std::size_t... I>
@@ -133,18 +321,87 @@ inline bool named_tuple_from_python(
 }
 
 } // namespace detail
+
+// Register the Python namedtuple class for ``T`` and attach it to module
+// ``m`` under the macro-supplied class name. Publish-exactly-once
+// (first-registration wins) process-wide.
+template <typename T> inline void bind_namedtuple(::nanobind::module_ m) {
+    using Traits = detail::traits<T>;
+    using Fields = typename Traits::fields_t;
+    static_assert(
+        detail::defaults_are_trailing<Fields>(),
+        "nbnt::bind_namedtuple: fields with .default_(...) must form a contiguous "
+        "trailing suffix of the field list"
+    );
+
+    // Fast idempotent-reattach path: another module already published a
+    // class for ``T``; adopt it and attach as a module attribute.
+    if (PyObject *existing = detail::load_nt_cls_cold<T>()) {
+        if (PyObject_SetAttrString(m.ptr(), Traits::class_name, existing) < 0)
+            throw ::nanobind::python_error();
+        return;
+    }
+
+    // Assemble the field-names tuple and the trailing-defaults tuple from
+    // the compile-time metadata.
+    auto fields = Traits::fields();
+    ::nanobind::object names = std::apply(
+        [](const auto &...fs) { return ::nanobind::make_tuple(::nanobind::str(fs.name)...); },
+        fields
+    );
+    ::nanobind::object defaults =
+        std::apply([](const auto &...fs) { return detail::make_defaults_from(fs...); }, fields);
+
+    // Cache the ``collections.namedtuple`` factory in a function-local
+    // static (magic-static-guard-serialised, GIL-independent).
+    static ::nanobind::object nt_factory =
+        ::nanobind::module_::import_("collections").attr("namedtuple");
+
+    ::nanobind::object cls_obj = nt_factory(
+        ::nanobind::str(Traits::class_name), names, ::nanobind::arg("defaults") = defaults,
+        ::nanobind::arg("module") = m.attr("__name__")
+    );
+
+    // Release into a raw PyObject* that we intentionally leak for the
+    // process lifetime on the winning branch; the losing branch drops it.
+    PyObject *candidate = cls_obj.release().ptr();
+
+    PyObject *winner = detail::publish_nt_cls<T>(candidate);
+    if (winner != candidate) {
+        Py_DECREF(candidate);
+        candidate = winner;
+    }
+
+    if (PyObject_SetAttrString(m.ptr(), Traits::class_name, candidate) < 0)
+        throw ::nanobind::python_error();
+}
+
 } // namespace nbnt
 
 // ``NB_NAMED_TUPLE_EX(Type, "ClassName", nbnt::field<&Type::a>("a"), ...)``
-// emits a ``nanobind::detail::type_caster<Type>`` specialization at the
-// current file scope. The macro must be invoked outside any namespace.
+// emits both a ``nbnt::detail::traits<Type>`` specialization (used by
+// ``bind_namedtuple<T>`` to reach the compile-time field metadata) and a
+// ``nanobind::detail::type_caster<Type>`` specialization at the current
+// file scope. The macro must be invoked outside any namespace.
 #define NB_NAMED_TUPLE_EX(Type, ClassName, ...)                                                    \
+    namespace nbnt {                                                                               \
+    namespace detail {                                                                             \
+    template <> struct traits<Type> {                                                              \
+        using _nbnt_current_type [[maybe_unused]] = Type;                                          \
+        static constexpr const char *class_name = ClassName;                                       \
+        using fields_t = decltype(::std::make_tuple(__VA_ARGS__));                                 \
+        static fields_t fields() {                                                                 \
+            using _nbnt_current_type [[maybe_unused]] = Type;                                      \
+            return ::std::make_tuple(__VA_ARGS__);                                                 \
+        }                                                                                          \
+    };                                                                                             \
+    }                                                                                              \
+    }                                                                                              \
     NAMESPACE_BEGIN(NB_NAMESPACE)                                                                  \
     NAMESPACE_BEGIN(detail)                                                                        \
     template <> struct type_caster<Type> {                                                         \
       private:                                                                                     \
-        using _nbnt_current_type [[maybe_unused]] = Type;                                          \
-        using _nbnt_fields_t = decltype(::std::make_tuple(__VA_ARGS__));                           \
+        using _nbnt_fields_t = typename ::nbnt::detail::traits<Type>::fields_t;                    \
         static_assert(                                                                             \
             ::std::is_default_constructible_v<Type>,                                               \
             "NB_NAMED_TUPLE requires the record type to be "                                       \

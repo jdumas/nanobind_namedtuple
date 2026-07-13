@@ -35,6 +35,10 @@ NB_MODULE(nbnt_example_hello, m) {
     m.def("hello", []() { return "hello from nanobind_namedtuple"; });
     m.def("add", [](int a, int b) { return a + b; });
 
+    nbnt::bind_namedtuple<Color>(m);
+    nbnt::bind_namedtuple<Point>(m);
+    nbnt::bind_namedtuple<Empty>(m);
+
     m.def("make_color", [](float r, float g, float b) { return Color{r, g, b}; });
     m.def("sum_color", [](Color c) { return c.r + c.g + c.b; });
 
