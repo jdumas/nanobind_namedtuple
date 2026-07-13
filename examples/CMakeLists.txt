@@ -1,0 +1,4 @@
+nanobind_add_module(nbnt_example_hello STABLE_ABI hello.cpp)
+target_link_libraries(nbnt_example_hello PRIVATE nanobind_namedtuple)
+install(TARGETS nbnt_example_hello LIBRARY DESTINATION nanobind_namedtuple_examples)
+install(FILES __init__.py DESTINATION nanobind_namedtuple_examples)
