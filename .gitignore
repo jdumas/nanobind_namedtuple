@@ -8,6 +8,12 @@ __pycache__/
 # Build / packaging
 build/
 dist/
+wheelhouse/
+_skbuild/
+
+# Editor / IDE
+.vscode/
+.idea/
 
 # Agent scratch
 .augment/

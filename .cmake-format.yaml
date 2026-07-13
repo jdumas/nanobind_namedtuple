@@ -1,0 +1,21 @@
+format:
+  line_width: 100
+  tab_size: 4
+  use_tabchars: false
+  separate_ctrl_name_with_space: false
+  separate_fn_name_with_space: false
+  dangle_parens: false
+  max_prefix_chars: 4
+  max_lines_hwrap: 2
+  line_ending: unix
+  command_case: canonical
+  keyword_case: unchanged
+
+markup:
+  bullet_char: "-"
+  enum_char: "."
+  first_comment_is_literal: false
+  enable_markup: false
+
+lint:
+  disabled_codes: []

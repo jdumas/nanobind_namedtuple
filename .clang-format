@@ -1,0 +1,18 @@
+---
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 100
+PointerAlignment: Right
+AlignAfterOpenBracket: BlockIndent
+AllowShortFunctionsOnASingleLine: Empty
+BreakBeforeBraces: Attach
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^<nanobind/'
+    Priority: 2
+  - Regex: '^<nanobind_namedtuple/'
+    Priority: 3
+  - Regex: '^<[[:alnum:]_/]+>$'
+    Priority: 1
+  - Regex: '.*'
+    Priority: 4
