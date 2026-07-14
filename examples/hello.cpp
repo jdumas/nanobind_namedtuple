@@ -40,9 +40,8 @@ struct Pixel {
     Color color;
 };
 
-// Record with an ``std::optional<int>`` field. Exercises optional support
-// through ``nanobind/stl/optional.h``; ``None`` maps to ``std::nullopt``
-// and integers map to the engaged value.
+// Record with std::optional<int>, exercising nanobind/stl/optional.h
+// (None <-> std::nullopt, integers <-> engaged value).
 struct Tagged {
     int value;
     std::optional<int> tag;
@@ -107,10 +106,8 @@ NB_MODULE(nbnt_example_hello, m) {
     m.def("make_tagged", [](int value, std::optional<int> tag) { return Tagged{value, tag}; });
     m.def("tagged_tag", [](Tagged t) { return t.tag; });
 
-    // rv_policy fixtures: identical body, different declared policies. The
-    // caster silently downgrades ``reference`` / ``automatic_reference`` to
-    // ``copy`` (or ``move`` for rvalue sources) and rejects
-    // ``reference_internal`` / ``take_ownership`` with a clean ``TypeError``.
+    // rv_policy fixtures: reference/automatic_reference downgrade to copy
+    // (move for rvalue sources); reference_internal/take_ownership raise TypeError.
     m.def(
         "make_color_reference", [](float r, float g, float b) { return Color{r, g, b}; },
         nb::rv_policy::reference

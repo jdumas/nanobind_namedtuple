@@ -69,10 +69,8 @@ NB_NAMED_TUPLE_EX(
 
 ## Return-value policy
 
-`nbnt::bind_namedtuple<T>` produces value casters. The caster silently
-downgrades `rv_policy::reference` and `rv_policy::automatic_reference` to
-`copy` (or `move`, for rvalue sources) because a tuple never legally
-references the internals of a soon-to-die parent temporary.
-`rv_policy::reference_internal` and `rv_policy::take_ownership` are rejected
-with a clean `TypeError` at cast time — tuple instances lack `__weakref__`
-for lifetime tracking and have no owned C++ instance to transfer.
+`nbnt::bind_namedtuple<T>` produces value casters. `rv_policy::reference`
+and `rv_policy::automatic_reference` are downgraded to `copy`, or to `move`
+for rvalue sources, because the resulting tuple cannot reference the parent
+object. `rv_policy::reference_internal` and `rv_policy::take_ownership`
+raise `TypeError` at cast time.
