@@ -461,11 +461,17 @@ template <typename T> inline void bind_namedtuple(::nanobind::module_ m) {
             ::nanobind::str(detail::field_annotation_str<field_value_type>());
     };
     std::apply([&](const auto &...fs) { (add_annot(fs), ...); }, fields);
+    // Give ``__annotations__`` its own dict so user mutation cannot corrupt
+    // the ``__nb_nt_annotations__`` sentinel that the stubgen hook keys on.
+    PyObject *annotations_copy = PyDict_Copy(annotations.ptr());
+    if (annotations_copy == nullptr)
+        throw ::nanobind::python_error();
+    ::nanobind::dict annotations_public = ::nanobind::steal<::nanobind::dict>(annotations_copy);
     if (PyObject_SetAttrString(cls_obj.ptr(), "__nb_named_tuple__", Py_True) < 0)
         throw ::nanobind::python_error();
     if (PyObject_SetAttrString(cls_obj.ptr(), "__nb_nt_annotations__", annotations.ptr()) < 0)
         throw ::nanobind::python_error();
-    if (PyObject_SetAttrString(cls_obj.ptr(), "__annotations__", annotations.ptr()) < 0)
+    if (PyObject_SetAttrString(cls_obj.ptr(), "__annotations__", annotations_public.ptr()) < 0)
         throw ::nanobind::python_error();
 
     // Release into a raw PyObject* that we intentionally leak for the

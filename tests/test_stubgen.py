@@ -53,6 +53,20 @@ def test_annotations_attribute_populated_with_string_types():
     }
 
 
+def test_annotations_and_sentinel_are_distinct_dict_objects():
+    color = nbnt_example_hello.Color
+    assert color.__annotations__ == color.__nb_nt_annotations__
+    assert color.__annotations__ is not color.__nb_nt_annotations__
+    sentinel_snapshot = dict(color.__nb_nt_annotations__)
+    try:
+        color.__annotations__["r"] = "int"
+        color.__annotations__["injected"] = "bogus"
+        assert color.__nb_nt_annotations__ == sentinel_snapshot
+    finally:
+        color.__annotations__.pop("injected", None)
+        color.__annotations__["r"] = "float"
+
+
 def _generate_stub(cls, *, hook):
     gen = hook(module=nbnt_example_hello, include_docstrings=False)
     gen.put(cls, name=cls.__name__, parent=nbnt_example_hello)
