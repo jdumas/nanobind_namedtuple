@@ -306,14 +306,30 @@ named_tuple_from_python_impl(::nanobind::handle src, uint8_t flags, ::nanobind::
     return ok;
 }
 
+// Strict ``from_python`` acceptance:
+//   * an instance of the registered class for ``T`` (exact ``Py_TYPE``
+//     identity, never ``PyObject_IsInstance`` — subclasses are rejected);
+//   * an exact-arity plain ``tuple`` (``PyTuple_CheckExact`` — non-exact
+//     ``tuple`` subclasses, including other namedtuples, are rejected).
+// If ``T`` has no registered class yet, the exact-identity branch is
+// skipped and the plain-tuple branch remains available. On any mismatch or
+// per-field conversion failure the function returns ``false`` cleanly so
+// nanobind's overload resolution can move on; it never raises.
 template <typename Type, typename Fields>
 inline bool named_tuple_from_python(
     ::nanobind::handle src, uint8_t flags, ::nanobind::detail::cleanup_list *cleanup, Type &out
 ) noexcept {
     constexpr std::size_t N = std::tuple_size_v<Fields>;
-    if (!src.ptr() || !PyTuple_CheckExact(src.ptr()))
+    PyObject *src_ptr = src.ptr();
+    if (!src_ptr)
         return false;
-    if (PyTuple_GET_SIZE(src.ptr()) != static_cast<Py_ssize_t>(N))
+    PyObject *cls = load_nt_cls_hot<Type>();
+    bool is_registered =
+        (cls != nullptr) && (Py_TYPE(src_ptr) == reinterpret_cast<PyTypeObject *>(cls));
+    bool is_plain_tuple = PyTuple_CheckExact(src_ptr);
+    if (!is_registered && !is_plain_tuple)
+        return false;
+    if (PyTuple_GET_SIZE(src_ptr) != static_cast<Py_ssize_t>(N))
         return false;
     return named_tuple_from_python_impl<Type, Fields>(
         src, flags, cleanup, out, std::make_index_sequence<N>{}

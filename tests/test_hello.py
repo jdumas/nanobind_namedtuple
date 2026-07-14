@@ -91,6 +91,40 @@ def test_empty_rejects_wrong_arity():
         nbnt_example_hello.take_empty((1,))
 
 
+def test_color_accepts_registered_class_instance():
+    instance = nbnt_example_hello.Color(1.0, 2.0, 4.0)
+    assert nbnt_example_hello.sum_color(instance) == pytest.approx(7.0)
+
+
+def test_point_accepts_registered_class_instance():
+    instance = nbnt_example_hello.Point(4, 5, "hello")
+    assert nbnt_example_hello.point_label(instance) == "hello"
+
+
+def test_empty_accepts_registered_class_instance():
+    assert nbnt_example_hello.take_empty(nbnt_example_hello.Empty()) is True
+
+
+def test_color_rejects_other_registered_namedtuple():
+    other = nbnt_example_hello.Vec3(1.0, 2.0, 3.0)
+    with pytest.raises(TypeError):
+        nbnt_example_hello.sum_color(other)
+
+
+def test_vec3_rejects_color_instance():
+    color = nbnt_example_hello.Color(1.0, 2.0, 3.0)
+    with pytest.raises(TypeError):
+        nbnt_example_hello.sum_vec3(color)
+
+
+def test_color_rejects_stdlib_namedtuple_of_same_arity():
+    from collections import namedtuple
+
+    Other = namedtuple("Other", ["r", "g", "b"])
+    with pytest.raises(TypeError):
+        nbnt_example_hello.sum_color(Other(1.0, 2.0, 3.0))
+
+
 def test_repeated_registration_preserves_class_identity():
     original = nbnt_example_hello.Color
     original_id = id(original)
