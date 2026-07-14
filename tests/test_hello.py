@@ -89,3 +89,18 @@ def test_color_rejects_wrong_element_type():
 def test_empty_rejects_wrong_arity():
     with pytest.raises(TypeError):
         nbnt_example_hello.take_empty((1,))
+
+
+def test_repeated_registration_preserves_class_identity():
+    original = nbnt_example_hello.Color
+    original_id = id(original)
+    instance_before = nbnt_example_hello.make_color(0.25, 0.5, 0.75)
+    assert isinstance(instance_before, original)
+
+    nbnt_example_hello.rebind_color(nbnt_example_hello)
+
+    assert nbnt_example_hello.Color is original
+    assert id(nbnt_example_hello.Color) == original_id
+    assert isinstance(instance_before, nbnt_example_hello.Color)
+    instance_after = nbnt_example_hello.make_color(0.1, 0.2, 0.3)
+    assert type(instance_after) is nbnt_example_hello.Color

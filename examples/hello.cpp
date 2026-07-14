@@ -39,6 +39,8 @@ NB_MODULE(nbnt_example_hello, m) {
     nbnt::bind_namedtuple<Point>(m);
     nbnt::bind_namedtuple<Empty>(m);
 
+    m.def("rebind_color", [](nb::module_ mod) { nbnt::bind_namedtuple<Color>(mod); });
+
     m.def("make_color", [](float r, float g, float b) { return Color{r, g, b}; });
     m.def("sum_color", [](Color c) { return c.r + c.g + c.b; });
 
