@@ -21,6 +21,12 @@ struct Point {
 
 struct Empty {};
 
+struct Vec3 {
+    float x;
+    float y;
+    float z;
+};
+
 NB_NAMED_TUPLE(Color, "Color", NB_NT_FIELD(r), NB_NT_FIELD(g), NB_NT_FIELD(b))
 
 NB_NAMED_TUPLE_EX(
@@ -30,6 +36,8 @@ NB_NAMED_TUPLE_EX(
 
 NB_NAMED_TUPLE(Empty, "Empty")
 
+NB_NAMED_TUPLE(Vec3, "Vec3", NB_NT_FIELD(x), NB_NT_FIELD(y), NB_NT_FIELD(z))
+
 NB_MODULE(nbnt_example_hello, m) {
     m.doc() = "Minimal nanobind extension used by the nanobind_namedtuple test suite.";
     m.def("hello", []() { return "hello from nanobind_namedtuple"; });
@@ -38,6 +46,7 @@ NB_MODULE(nbnt_example_hello, m) {
     nbnt::bind_namedtuple<Color>(m);
     nbnt::bind_namedtuple<Point>(m);
     nbnt::bind_namedtuple<Empty>(m);
+    nbnt::bind_namedtuple<Vec3>(m);
 
     m.def("rebind_color", [](nb::module_ mod) { nbnt::bind_namedtuple<Color>(mod); });
 
@@ -51,4 +60,7 @@ NB_MODULE(nbnt_example_hello, m) {
 
     m.def("make_empty", []() { return Empty{}; });
     m.def("take_empty", [](Empty) { return true; });
+
+    m.def("make_vec3", [](float x, float y, float z) { return Vec3{x, y, z}; });
+    m.def("sum_vec3", [](Vec3 v) { return v.x + v.y + v.z; });
 }
