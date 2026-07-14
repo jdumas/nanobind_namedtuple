@@ -14,12 +14,7 @@
 //     publishes it to a per-``T`` slot with publish-exactly-once
 //     semantics (first-registration wins).
 
-#include <cstddef>
-#include <cstdint>
 #include <optional>
-#include <tuple>
-#include <type_traits>
-#include <utility>
 
 #include <nanobind/nanobind.h>
 
@@ -30,10 +25,6 @@
 namespace nbnt {
 
 namespace detail {
-
-template <typename R, typename C> C record_of_member_ptr(R C::*);
-
-template <auto MemberPtr> using record_of_t = decltype(record_of_member_ptr(MemberPtr));
 
 template <typename R, typename C> R value_of_member_ptr(R C::*);
 
@@ -159,7 +150,16 @@ template <typename T> inline PyObject *publish_nt_cls(PyObject *candidate) noexc
 #endif
 }
 
-template <typename Fields, std::size_t I> using field_at = std::tuple_element_t<I, Fields>;
+// Number of fields in a ``nanobind::detail::tuple``, replacing
+// ``std::tuple_size_v`` so this header does not need ``<tuple>``.
+template <typename Tuple> struct field_pack_size;
+template <typename... Ts> struct field_pack_size<::nanobind::detail::tuple<Ts...>> {
+    static constexpr std::size_t value = sizeof...(Ts);
+};
+template <typename Tuple>
+inline constexpr std::size_t field_pack_size_v = field_pack_size<Tuple>::value;
+
+template <typename Fields, std::size_t I> using field_at = typename Fields::template type<I>;
 
 template <typename Fields, std::size_t I>
 using field_value_t = value_of_t<field_at<Fields, I>::member_ptr>;
@@ -180,27 +180,14 @@ constexpr bool defaults_are_trailing_impl(std::index_sequence<I...>) {
 }
 
 template <typename Fields> constexpr bool defaults_are_trailing() {
-    return defaults_are_trailing_impl<Fields>(std::make_index_sequence<std::tuple_size_v<Fields>>{}
+    return defaults_are_trailing_impl<Fields>(std::make_index_sequence<field_pack_size_v<Fields>>{}
     );
-}
-
-template <typename Fields, std::size_t... I>
-constexpr std::size_t count_defaults_impl(std::index_sequence<I...>) {
-    return (0 + ... + (field_at<Fields, I>::has_default_v ? 1u : 0u));
-}
-
-template <typename Fields> constexpr std::size_t count_defaults() {
-    return count_defaults_impl<Fields>(std::make_index_sequence<std::tuple_size_v<Fields>>{});
 }
 
 // Build the ``defaults`` tuple to hand to ``collections.namedtuple``.
 // The trailing-suffix invariant is enforced by a static_assert in
 // ``bind_namedtuple<T>``, so once we hit the first defaulted field every
 // remaining field is also defaulted and ``.value()`` is safe.
-inline ::nanobind::object make_defaults_tuple() {
-    return ::nanobind::none();
-}
-
 template <typename F0, typename... Rest>
 inline ::nanobind::object make_defaults_tuple_head(const F0 &f0, const Rest &...rest) {
     if constexpr (F0::has_default_v) {
@@ -221,6 +208,24 @@ template <typename... Fs> inline ::nanobind::object make_defaults_from(const Fs 
     } else {
         return make_defaults_tuple_head(fs...);
     }
+}
+
+// Fold helpers replacing the ``std::apply`` sites in ``bind_namedtuple``.
+// Each takes the ``Traits::fields()`` tuple and an index sequence and
+// expands the pack via ``.template get<I>()`` on the nanobind tuple.
+template <typename Fields, std::size_t... I>
+inline ::nanobind::object make_names_object(const Fields &fs, std::index_sequence<I...>) {
+    return ::nanobind::make_tuple(::nanobind::str(fs.template get<I>().name)...);
+}
+
+template <typename Fields, std::size_t... I>
+inline ::nanobind::object make_defaults_object(const Fields &fs, std::index_sequence<I...>) {
+    return make_defaults_from(fs.template get<I>()...);
+}
+
+template <typename Fields, typename Fn, std::size_t... I>
+inline void for_each_field(const Fields &fs, Fn &&fn, std::index_sequence<I...>) {
+    (fn(fs.template get<I>()), ...);
 }
 
 // Compile-time-derived Python annotation string for a single field type.
@@ -301,7 +306,7 @@ template <typename Type, typename Fields, typename Src>
 inline ::nanobind::handle named_tuple_from_cpp(
     Src &&src, ::nanobind::rv_policy policy, ::nanobind::detail::cleanup_list *cleanup
 ) noexcept {
-    constexpr std::size_t N = std::tuple_size_v<Fields>;
+    constexpr std::size_t N = field_pack_size_v<Fields>;
     PyObject *cls = load_nt_cls_hot<Type>();
     if (!cls) {
         PyErr_Format(
@@ -384,7 +389,7 @@ template <typename Type, typename Fields>
 inline bool named_tuple_from_python(
     ::nanobind::handle src, uint8_t flags, ::nanobind::detail::cleanup_list *cleanup, Type &out
 ) noexcept {
-    constexpr std::size_t N = std::tuple_size_v<Fields>;
+    constexpr std::size_t N = field_pack_size_v<Fields>;
     PyObject *src_ptr = src.ptr();
     if (!src_ptr)
         return false;
@@ -396,9 +401,16 @@ inline bool named_tuple_from_python(
         return false;
     if (PyTuple_GET_SIZE(src_ptr) != static_cast<Py_ssize_t>(N))
         return false;
-    return named_tuple_from_python_impl<Type, Fields>(
-        src, flags, cleanup, out, std::make_index_sequence<N>{}
-    );
+    if constexpr (N == 0) {
+        (void)flags;
+        (void)cleanup;
+        (void)out;
+        return true;
+    } else {
+        return named_tuple_from_python_impl<Type, Fields>(
+            src, flags, cleanup, out, std::make_index_sequence<N>{}
+        );
+    }
 }
 
 } // namespace detail
@@ -426,12 +438,10 @@ template <typename T> inline void bind_namedtuple(::nanobind::module_ m) {
     // Assemble the field-names tuple and the trailing-defaults tuple from
     // the compile-time metadata.
     auto fields = Traits::fields();
-    ::nanobind::object names = std::apply(
-        [](const auto &...fs) { return ::nanobind::make_tuple(::nanobind::str(fs.name)...); },
-        fields
-    );
+    constexpr std::size_t N = detail::field_pack_size_v<Fields>;
+    ::nanobind::object names = detail::make_names_object(fields, std::make_index_sequence<N>{});
     ::nanobind::object defaults =
-        std::apply([](const auto &...fs) { return detail::make_defaults_from(fs...); }, fields);
+        detail::make_defaults_object(fields, std::make_index_sequence<N>{});
 
     // Cache the ``collections.namedtuple`` factory in a function-local
     // static holding a raw ``PyObject *``. The reference is intentionally
@@ -460,7 +470,7 @@ template <typename T> inline void bind_namedtuple(::nanobind::module_ m) {
         annotations[::nanobind::str(f.name)] =
             ::nanobind::str(detail::field_annotation_str<field_value_type>());
     };
-    std::apply([&](const auto &...fs) { (add_annot(fs), ...); }, fields);
+    detail::for_each_field(fields, add_annot, std::make_index_sequence<N>{});
     // Give ``__annotations__`` its own dict so user mutation cannot corrupt
     // the ``__nb_nt_annotations__`` sentinel that the stubgen hook keys on.
     PyObject *annotations_copy = PyDict_Copy(annotations.ptr());
@@ -501,10 +511,10 @@ template <typename T> inline void bind_namedtuple(::nanobind::module_ m) {
     template <> struct traits<Type> {                                                              \
         using _nbnt_current_type [[maybe_unused]] = Type;                                          \
         static constexpr const char *class_name = ClassName;                                       \
-        using fields_t = decltype(::std::make_tuple(__VA_ARGS__));                                 \
+        using fields_t = decltype(::nanobind::detail::tuple(__VA_ARGS__));                         \
         static fields_t fields() {                                                                 \
             using _nbnt_current_type [[maybe_unused]] = Type;                                      \
-            return ::std::make_tuple(__VA_ARGS__);                                                 \
+            return ::nanobind::detail::tuple(__VA_ARGS__);                                         \
         }                                                                                          \
     };                                                                                             \
     }                                                                                              \
