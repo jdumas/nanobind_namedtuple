@@ -223,6 +223,21 @@ template <typename... Fs> inline ::nanobind::object make_defaults_from(const Fs 
     }
 }
 
+// Compile-time-derived Python annotation string for a single field type.
+// Returns the caster's ``Name`` text when it has no ``%`` type-substitution
+// slots (which covers Python built-in scalars, ``nb::object``, and nested
+// ``NB_NAMED_TUPLE``-bound classes); returns ``"typing.Any"`` when the
+// caster has substitution slots (parameterised STL container casters, etc.)
+// so the stubgen hook can still produce a syntactically-valid annotation.
+template <typename Field> inline const char *field_annotation_str() noexcept {
+    using caster_t = ::nanobind::detail::make_caster<Field>;
+    if constexpr (caster_t::Name.type_count() == 0) {
+        return caster_t::Name.text;
+    } else {
+        return "typing.Any";
+    }
+}
+
 template <typename Type, typename Fields, typename Src, std::size_t... I>
 inline bool
 named_tuple_fill_impl(Src &&src, ::nanobind::rv_policy policy, ::nanobind::detail::cleanup_list *cleanup, PyObject *result, std::index_sequence<I...>) noexcept {
@@ -381,6 +396,27 @@ template <typename T> inline void bind_namedtuple(::nanobind::module_ m) {
         ::nanobind::str(Traits::class_name), names, ::nanobind::arg("defaults") = defaults,
         ::nanobind::arg("module") = m.attr("__name__")
     );
+
+    // Attach the stubgen sentinel and per-field annotation metadata to the
+    // freshly-minted class before the CAS. Annotation strings are derived
+    // from each field caster's compile-time ``Name`` descr; casters with
+    // type-substitution slots fall back to ``"typing.Any"``. Setting the
+    // attributes here (rather than post-CAS) keeps the class fully
+    // populated before any other thread can observe it through the
+    // publication's release-store.
+    ::nanobind::dict annotations;
+    auto add_annot = [&](const auto &f) {
+        using field_value_type = typename std::remove_reference_t<decltype(f)>::value_type;
+        annotations[::nanobind::str(f.name)] =
+            ::nanobind::str(detail::field_annotation_str<field_value_type>());
+    };
+    std::apply([&](const auto &...fs) { (add_annot(fs), ...); }, fields);
+    if (PyObject_SetAttrString(cls_obj.ptr(), "__nb_named_tuple__", Py_True) < 0)
+        throw ::nanobind::python_error();
+    if (PyObject_SetAttrString(cls_obj.ptr(), "__nb_nt_annotations__", annotations.ptr()) < 0)
+        throw ::nanobind::python_error();
+    if (PyObject_SetAttrString(cls_obj.ptr(), "__annotations__", annotations.ptr()) < 0)
+        throw ::nanobind::python_error();
 
     // Release into a raw PyObject* that we intentionally leak for the
     // process lifetime on the winning branch; the losing branch drops it.

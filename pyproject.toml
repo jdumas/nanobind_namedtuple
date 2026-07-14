@@ -17,6 +17,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
+dependencies = ["nanobind >=2.2.0"]
 
 [project.optional-dependencies]
 test = ["pytest>=7"]
@@ -33,6 +34,7 @@ cmake.build-type = "Release"
 build.verbose = true
 logging.level = "INFO"
 wheel.py-api = "cp312"
+wheel.packages = ["stubgen/nanobind_namedtuple_stubgen"]
 
 [tool.scikit-build.cmake.define]
 NBNT_BUILD_EXAMPLES = "ON"
