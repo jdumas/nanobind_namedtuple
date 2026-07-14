@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, 'v*']
   workflow_dispatch:
 
 concurrency:
@@ -12,22 +12,102 @@ concurrency:
 
 jobs:
   standard:
-    name: standard / ubuntu-latest / Python 3.12
-    runs-on: ubuntu-latest
+    name: "Python ${{ matrix.python }} / ${{ matrix.os }}"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ['ubuntu-latest', 'windows-2022', 'macos-15']
+        python: ['3.9', '3.10', '3.11', '3.12', '3.13', '3.14', 'pypy3.10-v7.3.19', 'pypy3.11-v7.3.20']
+
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Setup Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: ${{ matrix.python }}
           cache: 'pip'
+
+      - name: Install the latest CMake
+        uses: lukka/get-cmake@latest
 
       - name: Install build + test dependencies
         run: |
           python -m pip install --upgrade pip
+          python -m pip install pytest pytest-github-actions-annotate-failures
           python -m pip install ".[test]"
 
       - name: Run pytest
+        run: python -m pytest tests -v
+
+  free-threaded:
+    name: "Python 3.14t / ubuntu-latest [free-threaded]"
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python 3.14t (free-threaded)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14t'
+
+      - name: Install the latest CMake
+        uses: lukka/get-cmake@latest
+
+      - name: Install build + test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest pytest-github-actions-annotate-failures
+          python -m pip install ".[test]"
+
+      - name: Run pytest
+        run: python -m pytest tests -v
+
+  mingw:
+    name: "Python ${{ matrix.python }} / MinGW-w64"
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup MSYS2 (MINGW64)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-python
+            mingw-w64-x86_64-python-pip
+            mingw-w64-x86_64-python-pytest
+
+      # The GCC 16.1 compiler that rolled out in MSYS2 in June 2026 produces
+      # objects with unresolvable references to std::string's move constructor
+      # (matches nanobind upstream ci.yml). Downgrade the compiler only:
+      # gcc-libs stays, since the other MSYS2 packages were rebuilt against
+      # it and are backward-compatible with GCC 15-compiled code.
+      - name: Downgrade GCC to 15.2
+        shell: msys2 {0}
+        run: |
+          pacman -U --noconfirm --nodeps --nodeps \
+            https://repo.msys2.org/mingw/mingw64/mingw-w64-x86_64-gcc-15.2.0-13-any.pkg.tar.zst
+
+      - name: Install build + test dependencies
+        shell: msys2 {0}
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pytest-github-actions-annotate-failures typing_extensions
+          python -m pip install ".[test]"
+
+      - name: Run pytest
+        shell: msys2 {0}
         run: python -m pytest tests -v
 
   lint:

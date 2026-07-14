@@ -238,6 +238,44 @@ template <typename Field> inline const char *field_annotation_str() noexcept {
     }
 }
 
+// Compute the rv_policy handed down to child field casters.
+//
+// The parent value handed to ``named_tuple_from_cpp`` is always a temporary
+// (a value or rvalue reference), or at best a caller-owned lvalue whose
+// lifetime is unrelated to the freshly-minted tuple. Field references into
+// its members are therefore never safe to publish to Python.
+//
+// The cascade rule:
+//   * ``reference`` / ``automatic_reference`` are downgraded to ``copy``
+//     for lvalue parents and ``move`` for rvalue parents, so nested field
+//     casters materialise their own copies instead of retaining a pointer
+//     into a soon-to-die parent.
+//   * ``reference_internal``, ``take_ownership`` are rejected at the caster
+//     boundary: neither composes with a tuple-shaped instance (tuples lack
+//     ``__weakref__`` for lifetime tracking, and this caster has no C++
+//     instance to hand ownership over). Callers see a clean ``TypeError``.
+//   * ``copy``, ``move``, ``automatic``, ``none`` pass through unchanged.
+template <typename Src>
+inline ::nanobind::rv_policy child_policy_from(::nanobind::rv_policy policy) noexcept {
+    constexpr bool src_is_rvalue = !std::is_lvalue_reference_v<Src>;
+    switch (policy) {
+    case ::nanobind::rv_policy::reference:
+    case ::nanobind::rv_policy::automatic_reference:
+        return src_is_rvalue ? ::nanobind::rv_policy::move : ::nanobind::rv_policy::copy;
+    default:
+        return policy;
+    }
+}
+
+// Return ``true`` when ``policy`` is one of the ownership / lifetime-tracking
+// policies that cannot legally target a tuple-shaped instance produced by
+// this caster. Callers must raise a ``TypeError`` and return an invalid
+// handle before allocating the output tuple.
+inline bool is_rejected_parent_policy(::nanobind::rv_policy policy) noexcept {
+    return policy == ::nanobind::rv_policy::reference_internal ||
+           policy == ::nanobind::rv_policy::take_ownership;
+}
+
 template <typename Type, typename Fields, typename Src, std::size_t... I>
 inline bool
 named_tuple_fill_impl(Src &&src, ::nanobind::rv_policy policy, ::nanobind::detail::cleanup_list *cleanup, PyObject *result, std::index_sequence<I...>) noexcept {
@@ -268,23 +306,35 @@ inline ::nanobind::handle named_tuple_from_cpp(
     if (!cls) {
         PyErr_Format(
             PyExc_RuntimeError,
-            "nanobind_namedtuple: type '%s' has no registered class \u2014 "
+            "nanobind_namedtuple: type '%s' has no registered class -- "
             "call nbnt::bind_namedtuple<T>(m) in NB_MODULE",
             traits<Type>::class_name
         );
         return {};
     }
+    if (is_rejected_parent_policy(policy)) {
+        PyErr_Format(
+            PyExc_TypeError,
+            "nanobind_namedtuple: type '%s' cannot be returned with rv_policy "
+            "'reference_internal' or 'take_ownership' -- tuple-shaped "
+            "instances do not support lifetime tracking or ownership transfer",
+            traits<Type>::class_name
+        );
+        return {};
+    }
+    ::nanobind::rv_policy child_policy = child_policy_from<Src>(policy);
     if constexpr (N == 0) {
         (void)src;
         (void)policy;
         (void)cleanup;
+        (void)child_policy;
         return PyObject_CallObject(cls, nullptr);
     } else {
         PyObject *result = PyTuple_New(static_cast<Py_ssize_t>(N));
         if (!result)
             return {};
         bool ok = named_tuple_fill_impl<Type, Fields>(
-            std::forward<Src>(src), policy, cleanup, result, std::make_index_sequence<N>{}
+            std::forward<Src>(src), child_policy, cleanup, result, std::make_index_sequence<N>{}
         );
         if (!ok) {
             Py_DECREF(result);
