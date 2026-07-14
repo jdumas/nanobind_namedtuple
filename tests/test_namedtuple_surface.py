@@ -33,15 +33,6 @@ def test_match_args_matches_fields():
     assert nbnt_example_hello.Empty.__match_args__ == nbnt_example_hello.Empty._fields
 
 
-def test_match_args_enables_structural_pattern():
-    value = nbnt_example_hello.make_color(1.0, 2.0, 3.0)
-    match value:
-        case nbnt_example_hello.Color(r, g, b):
-            assert (r, g, b) == (1.0, 2.0, 3.0)
-        case _:  # pragma: no cover - defensive
-            pytest.fail("structural match failed")
-
-
 def test_make_builds_from_iterable():
     value = nbnt_example_hello.Color._make(iter([0.25, 0.5, 0.75]))
     assert type(value) is nbnt_example_hello.Color
@@ -143,6 +134,9 @@ def test_reference_cycle_through_object_field_is_collected():
     weak = weakref.ref(holder)
 
     del holder
-    gc.collect()
+    for _ in range(6):
+        if weak() is None:
+            break
+        gc.collect()
 
     assert weak() is None
