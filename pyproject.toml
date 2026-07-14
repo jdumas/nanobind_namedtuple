@@ -46,6 +46,9 @@ target-version = "py39"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]
 
+[tool.ruff.lint.per-file-ignores]
+"*.pyi" = ["E501"]
+
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]

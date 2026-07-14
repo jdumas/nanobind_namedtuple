@@ -19,7 +19,7 @@ from nanobind.stubgen import StubGen
 from nanobind_namedtuple_examples import nbnt_example_hello
 from nanobind_namedtuple_stubgen import NamedTupleStubGen, is_namedtuple_class
 
-NT_CLASSES = ("Color", "Point", "Empty", "Vec3", "Payload")
+NT_CLASSES = ("Color", "Point", "Empty", "Vec3", "Payload", "Pixel", "Tagged")
 
 
 @pytest.mark.parametrize("cls_name", NT_CLASSES)

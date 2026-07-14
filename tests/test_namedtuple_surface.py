@@ -1,14 +1,17 @@
 """Verify the ``collections.namedtuple`` surface inherited by bound classes.
 
-Covers ``_fields``, ``_field_defaults``, ``__match_args__``, ``_make``,
-``_replace``, ``_asdict``, ``__getnewargs__``, ``__repr__``, read-only field
-descriptors, strict immutability, tuple behaviour, and reference-cycle
-collection through an ``nb::object``-typed field.
+Covers ``_fields``, ``_field_defaults``, ``_make``, ``_replace``,
+``_asdict``, ``__getnewargs__``, ``__repr__``, read-only field descriptors,
+strict immutability, tuple behaviour, and reference-cycle collection
+through an ``nb::object``-typed field. ``__match_args__`` coverage lives
+in ``tests/test_match_args_pattern.py``, which is gated to Python 3.10+
+(matching the stdlib, which only defines ``__match_args__`` there).
 """
 
 from __future__ import annotations
 
 import gc
+import sys
 import weakref
 
 import pytest
@@ -25,21 +28,6 @@ def test_field_defaults_reflects_trailing_defaults():
     assert nbnt_example_hello.Color._field_defaults == {}
     assert nbnt_example_hello.Point._field_defaults == {"label": ""}
     assert nbnt_example_hello.Empty._field_defaults == {}
-
-
-def test_match_args_matches_fields():
-    assert nbnt_example_hello.Color.__match_args__ == nbnt_example_hello.Color._fields
-    assert nbnt_example_hello.Point.__match_args__ == nbnt_example_hello.Point._fields
-    assert nbnt_example_hello.Empty.__match_args__ == nbnt_example_hello.Empty._fields
-
-
-def test_match_args_enables_structural_pattern():
-    value = nbnt_example_hello.make_color(1.0, 2.0, 3.0)
-    match value:
-        case nbnt_example_hello.Color(r, g, b):
-            assert (r, g, b) == (1.0, 2.0, 3.0)
-        case _:  # pragma: no cover - defensive
-            pytest.fail("structural match failed")
 
 
 def test_make_builds_from_iterable():
@@ -134,6 +122,10 @@ def test_payload_round_trip_preserves_object_identity():
     assert nbnt_example_hello.payload_obj(value) is marker
 
 
+@pytest.mark.skipif(
+    sys.implementation.name == "pypy",
+    reason="PyPy cpyext does not collect cycles through C-extension objects",
+)
 def test_reference_cycle_through_object_field_is_collected():
     class Holder:
         pass
@@ -143,6 +135,9 @@ def test_reference_cycle_through_object_field_is_collected():
     weak = weakref.ref(holder)
 
     del holder
-    gc.collect()
+    for _ in range(6):
+        if weak() is None:
+            break
+        gc.collect()
 
     assert weak() is None
