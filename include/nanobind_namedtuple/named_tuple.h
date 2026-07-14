@@ -30,15 +30,8 @@ template <auto MemberPtr> using value_of_t = decltype(value_of_member_ptr(Member
 
 } // namespace detail
 
-// Compile-time descriptor for a single named field of a record.
-//
-// ``MemberPtr`` is a non-type template parameter carrying the pointer to
-// the underlying C++ member. ``HasDefault`` encodes whether a default value
-// was supplied via ``.default_(...)``. The primary template describes a
-// field without a default and stores only ``name``; the ``HasDefault=true``
-// specialization additionally stores the value forwarded to
-// ``collections.namedtuple``'s ``defaults=`` argument directly (no
-// ``std::optional`` wrapping).
+// Compile-time field descriptor: stores the member pointer and name; the
+// HasDefault=true specialization also holds the default_ value verbatim.
 template <auto MemberPtr, bool HasDefault = false> struct field {
     using value_type = detail::value_of_t<MemberPtr>;
     static constexpr auto member_ptr = MemberPtr;
@@ -67,15 +60,8 @@ namespace detail {
 // Per-``T`` traits, specialized by ``NB_NAMED_TUPLE_EX``.
 template <typename T> struct traits;
 
-// Per-``T`` published class slot. Storage type varies by build:
-//   * GIL builds and free-threaded builds with ``std::atomic_ref``: plain
-//     ``PyObject *``. Under the GIL the publication is a plain
-//     check-and-store; on free-threaded builds with ``std::atomic_ref`` the
-//     publication is a create-once CAS through the atomic_ref, but the
-//     storage stays plain so the hot-path relaxed load compiles to a plain
-//     load.
-//   * Free-threaded builds without ``std::atomic_ref``: promoted to
-//     ``std::atomic<PyObject *>``.
+// Per-T class slot: plain PyObject* under the GIL and with std::atomic_ref
+// (publication is a CAS via atomic_ref); std::atomic<PyObject*> otherwise.
 #if defined(NB_FREE_THREADED) && !(defined(__cpp_lib_atomic_ref) && __cpp_lib_atomic_ref >= 201806L)
 template <typename T> struct nt_class {
     inline static std::atomic<PyObject *> cls{nullptr};
@@ -123,9 +109,8 @@ template <typename T> inline PyObject *load_nt_cls_cold() noexcept {
 #endif
 }
 
-// Publish ``candidate`` into ``nt_class<T>::cls`` with publish-exactly-once
-// semantics. Returns the winning pointer: on success, ``candidate`` itself;
-// on failure, the pointer another thread published first.
+// Publish-exactly-once CAS into nt_class<T>::cls; returns the winner
+// (``candidate`` on success, another thread's pointer on loss).
 template <typename T> inline PyObject *publish_nt_cls(PyObject *candidate) noexcept {
 #if defined(NB_FREE_THREADED)
     PyObject *expected = nullptr;
@@ -186,13 +171,8 @@ template <typename Fields> constexpr bool defaults_are_trailing() {
     );
 }
 
-// Build the ``defaults`` tuple to hand to ``collections.namedtuple``.
-// The trailing-suffix invariant is enforced by a static_assert in
-// ``bind_namedtuple<T>``, so once we hit the first defaulted field every
-// remaining field is also defaulted. The inner ``if constexpr`` on the
-// trailing-invariant check keeps this function well-formed even on a
-// violating field list, so the clean static_assert in ``bind_namedtuple``
-// fires before any template error here.
+// Build the ``defaults`` tuple for collections.namedtuple. The inner
+// if constexpr keeps this well-formed so bind_namedtuple's static_assert fires first.
 template <typename F0, typename... Rest>
 inline ::nanobind::object make_defaults_tuple_head(const F0 &f0, const Rest &...rest) {
     if constexpr (F0::has_default_v) {
@@ -218,9 +198,8 @@ template <typename... Fs> inline ::nanobind::object make_defaults_from(const Fs 
     }
 }
 
-// Fold helpers replacing the ``std::apply`` sites in ``bind_namedtuple``.
-// Each takes the ``Traits::fields()`` tuple and an index sequence and
-// expands the pack via ``.template get<I>()`` on the nanobind tuple.
+// Fold helpers replacing std::apply: expand the Traits::fields() nanobind
+// tuple via ``.template get<I>()`` under an index sequence.
 template <typename Fields, std::size_t... I>
 inline ::nanobind::object make_names_object(const Fields &fs, std::index_sequence<I...>) {
     return ::nanobind::make_tuple(::nanobind::str(fs.template get<I>().name)...);
@@ -236,12 +215,8 @@ inline void for_each_field(const Fields &fs, Fn &&fn, std::index_sequence<I...>)
     (fn(fs.template get<I>()), ...);
 }
 
-// Compile-time-derived Python annotation string for a single field type.
-// Returns the caster's ``Name`` text when it has no ``%`` type-substitution
-// slots (which covers Python built-in scalars, ``nb::object``, and nested
-// ``NB_NAMED_TUPLE``-bound classes); returns ``"typing.Any"`` when the
-// caster has substitution slots (parameterised STL container casters, etc.)
-// so the stubgen hook can still produce a syntactically-valid annotation.
+// Python annotation string for a field: caster's Name text when it has no
+// type-substitution slots, otherwise ``"typing.Any"`` for stubgen.
 template <typename Field> inline const char *field_annotation_str() noexcept {
     using caster_t = ::nanobind::detail::make_caster<Field>;
     if constexpr (caster_t::Name.type_count() == 0) {
@@ -251,23 +226,8 @@ template <typename Field> inline const char *field_annotation_str() noexcept {
     }
 }
 
-// Compute the rv_policy handed down to child field casters.
-//
-// The parent value handed to ``named_tuple_from_cpp`` is always a temporary
-// (a value or rvalue reference), or at best a caller-owned lvalue whose
-// lifetime is unrelated to the freshly-minted tuple. Field references into
-// its members are therefore never safe to publish to Python.
-//
-// The cascade rule:
-//   * ``reference`` / ``automatic_reference`` are downgraded to ``copy``
-//     for lvalue parents and ``move`` for rvalue parents, so nested field
-//     casters materialise their own copies instead of retaining a pointer
-//     into a soon-to-die parent.
-//   * ``reference_internal``, ``take_ownership`` are rejected at the caster
-//     boundary: neither composes with a tuple-shaped instance (tuples lack
-//     ``__weakref__`` for lifetime tracking, and this caster has no C++
-//     instance to hand ownership over). Callers see a clean ``TypeError``.
-//   * ``copy``, ``move``, ``automatic``, ``none`` pass through unchanged.
+// Child rv_policy: reference/automatic_reference downgrade to copy (move
+// for rvalue parents); copy/move/automatic/none pass through unchanged.
 template <typename Src>
 inline ::nanobind::rv_policy child_policy_from(::nanobind::rv_policy policy) noexcept {
     constexpr bool src_is_rvalue = !std::is_lvalue_reference_v<Src>;
@@ -280,10 +240,8 @@ inline ::nanobind::rv_policy child_policy_from(::nanobind::rv_policy policy) noe
     }
 }
 
-// Return ``true`` when ``policy`` is one of the ownership / lifetime-tracking
-// policies that cannot legally target a tuple-shaped instance produced by
-// this caster. Callers must raise a ``TypeError`` and return an invalid
-// handle before allocating the output tuple.
+// True for reference_internal/take_ownership, which cannot target a
+// tuple-shaped instance; callers must raise TypeError before allocating.
 inline bool is_rejected_parent_policy(::nanobind::rv_policy policy) noexcept {
     return policy == ::nanobind::rv_policy::reference_internal ||
            policy == ::nanobind::rv_policy::take_ownership;
@@ -384,15 +342,8 @@ named_tuple_from_python_impl(::nanobind::handle src, uint8_t flags, ::nanobind::
     return ok;
 }
 
-// Strict ``from_python`` acceptance:
-//   * an instance of the registered class for ``T`` (exact ``Py_TYPE``
-//     identity, never ``PyObject_IsInstance`` — subclasses are rejected);
-//   * an exact-arity plain ``tuple`` (``PyTuple_CheckExact`` — non-exact
-//     ``tuple`` subclasses, including other namedtuples, are rejected).
-// If ``T`` has no registered class yet, the exact-identity branch is
-// skipped and the plain-tuple branch remains available. On any mismatch or
-// per-field conversion failure the function returns ``false`` cleanly so
-// nanobind's overload resolution can move on; it never raises.
+// Strict from_python: exact Py_TYPE match to T's registered class or an
+// exact-arity plain tuple; any other mismatch returns false without raising.
 template <typename Type, typename Fields>
 inline bool named_tuple_from_python(
     ::nanobind::handle src, uint8_t flags, ::nanobind::detail::cleanup_list *cleanup, Type &out
@@ -421,10 +372,8 @@ inline bool named_tuple_from_python(
     }
 }
 
-// Cache the ``collections.namedtuple`` factory in a single non-template
-// function-local static. The reference is intentionally leaked for the
-// process lifetime so no C++ static destructor touches Python state after
-// ``Py_Finalize``. Returns a borrowed reference.
+// Cached collections.namedtuple factory; the reference is intentionally
+// leaked for the process lifetime so no static dtor runs after Py_Finalize.
 inline PyObject *nt_factory_cached() {
     static PyObject *factory = []() {
         ::nanobind::object f = ::nanobind::module_::import_("collections").attr("namedtuple");
@@ -433,14 +382,8 @@ inline PyObject *nt_factory_cached() {
     return factory;
 }
 
-// Type-independent registration tail: invoke ``collections.namedtuple`` and
-// attach the stubgen sentinel and per-field annotation metadata to the
-// freshly-minted class. ``__annotations__`` gets its own dict (via
-// ``PyDict_Copy``) so user mutation cannot corrupt the
-// ``__nb_nt_annotations__`` sentinel that the stubgen hook keys on. Setting
-// the attributes here (rather than post-CAS) keeps the class fully
-// populated before any other thread can observe it through the
-// publication's release-store. Returns a new owning reference (strong).
+// Registration tail: factory + sentinels set pre-CAS (fully populated when
+// observed); ``__annotations__`` is a copy protecting ``__nb_nt_annotations__``. Strong ref.
 NB_NOINLINE inline PyObject *nt_finalize_class(
     PyObject *m_ptr, const char *class_name, PyObject *names, PyObject *defaults,
     PyObject *annotations
@@ -465,9 +408,8 @@ NB_NOINLINE inline PyObject *nt_finalize_class(
     return cls_obj.release().ptr();
 }
 
-// Attach the (published) class object to ``m`` under ``class_name``. The
-// module-attach step is factored out to keep the per-``T`` template body
-// free of another ``PyObject_SetAttrString`` copy.
+// Attach the published class to ``m`` under ``class_name``; factored out
+// to keep the per-``T`` template body slim.
 NB_NOINLINE inline void
 nt_attach_to_module(PyObject *m_ptr, const char *class_name, PyObject *cls) {
     if (PyObject_SetAttrString(m_ptr, class_name, cls) < 0)
@@ -476,9 +418,8 @@ nt_attach_to_module(PyObject *m_ptr, const char *class_name, PyObject *cls) {
 
 } // namespace detail
 
-// Register the Python namedtuple class for ``T`` and attach it to module
-// ``m`` under the macro-supplied class name. Publish-exactly-once
-// (first-registration wins) process-wide.
+// Register the Python namedtuple class for ``T`` and attach it to ``m``.
+// Publish-exactly-once (first-registration wins) process-wide.
 template <typename T> inline void bind_namedtuple(::nanobind::module_ m) {
     using Traits = detail::traits<T>;
     using Fields = typename Traits::fields_t;
@@ -495,11 +436,8 @@ template <typename T> inline void bind_namedtuple(::nanobind::module_ m) {
         return;
     }
 
-    // Assemble the field-names tuple, trailing-defaults tuple, and
-    // per-field annotation-string dict from the compile-time metadata.
-    // Annotation strings are derived from each field caster's compile-time
-    // ``Name`` descr; casters with type-substitution slots fall back to
-    // ``"typing.Any"``.
+    // Assemble names, trailing-defaults, and per-field annotation strings
+    // from compile-time metadata; slotted casters fall back to typing.Any.
     auto fields = Traits::fields();
     constexpr std::size_t N = detail::field_pack_size_v<Fields>;
     ::nanobind::object names = detail::make_names_object(fields, std::make_index_sequence<N>{});
@@ -513,10 +451,8 @@ template <typename T> inline void bind_namedtuple(::nanobind::module_ m) {
     };
     detail::for_each_field(fields, add_annot, std::make_index_sequence<N>{});
 
-    // Delegate the type-independent registration tail (factory call,
-    // sentinel + annotation attach, ``__annotations__`` decoupling) to a
-    // single non-template helper so each ``bind_namedtuple<T>`` only carries
-    // the per-``T`` publish-once CAS below.
+    // Delegate the type-independent tail to a non-template helper so each
+    // bind_namedtuple<T> only carries the per-T publish-once CAS below.
     PyObject *candidate = detail::nt_finalize_class(
         m.ptr(), Traits::class_name, names.ptr(), defaults.ptr(), annotations.ptr()
     );
@@ -532,11 +468,8 @@ template <typename T> inline void bind_namedtuple(::nanobind::module_ m) {
 
 } // namespace nbnt
 
-// ``NB_NAMED_TUPLE_EX(Type, "ClassName", nbnt::field<&Type::a>("a"), ...)``
-// emits both a ``nbnt::detail::traits<Type>`` specialization (used by
-// ``bind_namedtuple<T>`` to reach the compile-time field metadata) and a
-// ``nanobind::detail::type_caster<Type>`` specialization at the current
-// file scope. The macro must be invoked outside any namespace.
+// NB_NAMED_TUPLE_EX emits the traits<Type> and type_caster<Type>
+// specializations at file scope; must be invoked outside any namespace.
 #define NB_NAMED_TUPLE_EX(Type, ClassName, ...)                                                    \
     namespace nbnt {                                                                               \
     namespace detail {                                                                             \
@@ -583,12 +516,10 @@ template <typename T> inline void bind_namedtuple(::nanobind::module_ m) {
     NAMESPACE_END(detail)                                                                          \
     NAMESPACE_END(NB_NAMESPACE)
 
-// ``NB_NAMED_TUPLE(Type, "ClassName", NB_NT_FIELD(a), NB_NT_FIELD(b), ...)``
-// is the concise form that infers the member pointer and the string name
-// from each ``NB_NT_FIELD`` argument.
+// NB_NAMED_TUPLE is the concise form: infers the member pointer and name
+// from each NB_NT_FIELD argument.
 #define NB_NAMED_TUPLE(Type, ClassName, ...) NB_NAMED_TUPLE_EX(Type, ClassName, __VA_ARGS__)
 
-// ``NB_NT_FIELD(member)`` expands to a ``nbnt::field<&Type::member>("member")``
-// initializer. It is only valid inside the argument list of ``NB_NAMED_TUPLE``,
-// where ``_nbnt_current_type`` is aliased to the enclosing record type.
+// NB_NT_FIELD(member) expands to nbnt::field<&Type::member>("member"); valid
+// only inside NB_NAMED_TUPLE, where _nbnt_current_type aliases the record.
 #define NB_NT_FIELD(FieldName) ::nbnt::field<&_nbnt_current_type::FieldName>(#FieldName)
