@@ -353,11 +353,15 @@ template <typename T> inline void bind_namedtuple(::nanobind::module_ m) {
         std::apply([](const auto &...fs) { return detail::make_defaults_from(fs...); }, fields);
 
     // Cache the ``collections.namedtuple`` factory in a function-local
-    // static (magic-static-guard-serialised, GIL-independent).
-    static ::nanobind::object nt_factory =
-        ::nanobind::module_::import_("collections").attr("namedtuple");
+    // static holding a raw ``PyObject *``. The reference is intentionally
+    // leaked for the process lifetime so no C++ static destructor touches
+    // Python state after ``Py_Finalize``.
+    static PyObject *nt_factory = []() {
+        ::nanobind::object f = ::nanobind::module_::import_("collections").attr("namedtuple");
+        return f.release().ptr();
+    }();
 
-    ::nanobind::object cls_obj = nt_factory(
+    ::nanobind::object cls_obj = ::nanobind::borrow(nt_factory)(
         ::nanobind::str(Traits::class_name), names, ::nanobind::arg("defaults") = defaults,
         ::nanobind::arg("module") = m.attr("__name__")
     );
