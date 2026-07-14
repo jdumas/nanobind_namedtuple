@@ -14,13 +14,6 @@
 //     publishes it to a per-``T`` slot with publish-exactly-once
 //     semantics (first-registration wins).
 
-#include <cstddef>
-#include <cstdint>
-#include <optional>
-#include <tuple>
-#include <type_traits>
-#include <utility>
-
 #include <nanobind/nanobind.h>
 
 #if defined(NB_FREE_THREADED)
@@ -30,10 +23,6 @@
 namespace nbnt {
 
 namespace detail {
-
-template <typename R, typename C> C record_of_member_ptr(R C::*);
-
-template <auto MemberPtr> using record_of_t = decltype(record_of_member_ptr(MemberPtr));
 
 template <typename R, typename C> R value_of_member_ptr(R C::*);
 
@@ -45,28 +34,32 @@ template <auto MemberPtr> using value_of_t = decltype(value_of_member_ptr(Member
 //
 // ``MemberPtr`` is a non-type template parameter carrying the pointer to
 // the underlying C++ member. ``HasDefault`` encodes whether a default value
-// was supplied via ``.default_(...)``. ``name`` holds the Python-visible
-// name and ``default_value`` (present only when ``HasDefault``) holds the
-// value forwarded to ``collections.namedtuple``'s ``defaults=`` argument.
+// was supplied via ``.default_(...)``. The primary template describes a
+// field without a default and stores only ``name``; the ``HasDefault=true``
+// specialization additionally stores the value forwarded to
+// ``collections.namedtuple``'s ``defaults=`` argument directly (no
+// ``std::optional`` wrapping).
 template <auto MemberPtr, bool HasDefault = false> struct field {
     using value_type = detail::value_of_t<MemberPtr>;
     static constexpr auto member_ptr = MemberPtr;
-    static constexpr bool has_default_v = HasDefault;
+    static constexpr bool has_default_v = false;
 
     const char *name = nullptr;
-    std::optional<value_type> default_value;
 
     constexpr explicit field(const char *n) noexcept : name(n) {}
-    constexpr field(
-        const char *n, std::optional<value_type> d
-    ) noexcept(std::is_nothrow_move_constructible_v<std::optional<value_type>>)
-        : name(n), default_value(std::move(d)) {}
 
     template <typename V> field<MemberPtr, true> default_(V &&v) const {
-        return field<MemberPtr, true>(
-            name, std::optional<value_type>(std::in_place, std::forward<V>(v))
-        );
+        return field<MemberPtr, true>{name, value_type(std::forward<V>(v))};
     }
+};
+
+template <auto MemberPtr> struct field<MemberPtr, true> {
+    using value_type = detail::value_of_t<MemberPtr>;
+    static constexpr auto member_ptr = MemberPtr;
+    static constexpr bool has_default_v = true;
+
+    const char *name = nullptr;
+    value_type default_value;
 };
 
 namespace detail {
@@ -159,7 +152,16 @@ template <typename T> inline PyObject *publish_nt_cls(PyObject *candidate) noexc
 #endif
 }
 
-template <typename Fields, std::size_t I> using field_at = std::tuple_element_t<I, Fields>;
+// Number of fields in a ``nanobind::detail::tuple``, replacing
+// ``std::tuple_size_v`` so this header does not need ``<tuple>``.
+template <typename Tuple> struct field_pack_size;
+template <typename... Ts> struct field_pack_size<::nanobind::detail::tuple<Ts...>> {
+    static constexpr std::size_t value = sizeof...(Ts);
+};
+template <typename Tuple>
+inline constexpr std::size_t field_pack_size_v = field_pack_size<Tuple>::value;
+
+template <typename Fields, std::size_t I> using field_at = typename Fields::template type<I>;
 
 template <typename Fields, std::size_t I>
 using field_value_t = value_of_t<field_at<Fields, I>::member_ptr>;
@@ -180,34 +182,27 @@ constexpr bool defaults_are_trailing_impl(std::index_sequence<I...>) {
 }
 
 template <typename Fields> constexpr bool defaults_are_trailing() {
-    return defaults_are_trailing_impl<Fields>(std::make_index_sequence<std::tuple_size_v<Fields>>{}
+    return defaults_are_trailing_impl<Fields>(std::make_index_sequence<field_pack_size_v<Fields>>{}
     );
-}
-
-template <typename Fields, std::size_t... I>
-constexpr std::size_t count_defaults_impl(std::index_sequence<I...>) {
-    return (0 + ... + (field_at<Fields, I>::has_default_v ? 1u : 0u));
-}
-
-template <typename Fields> constexpr std::size_t count_defaults() {
-    return count_defaults_impl<Fields>(std::make_index_sequence<std::tuple_size_v<Fields>>{});
 }
 
 // Build the ``defaults`` tuple to hand to ``collections.namedtuple``.
 // The trailing-suffix invariant is enforced by a static_assert in
 // ``bind_namedtuple<T>``, so once we hit the first defaulted field every
-// remaining field is also defaulted and ``.value()`` is safe.
-inline ::nanobind::object make_defaults_tuple() {
-    return ::nanobind::none();
-}
-
+// remaining field is also defaulted. The inner ``if constexpr`` on the
+// trailing-invariant check keeps this function well-formed even on a
+// violating field list, so the clean static_assert in ``bind_namedtuple``
+// fires before any template error here.
 template <typename F0, typename... Rest>
 inline ::nanobind::object make_defaults_tuple_head(const F0 &f0, const Rest &...rest) {
     if constexpr (F0::has_default_v) {
-        return ::nanobind::make_tuple(
-            ::nanobind::cast(f0.default_value.value()),
-            ::nanobind::cast(rest.default_value.value())...
-        );
+        if constexpr ((Rest::has_default_v && ...)) {
+            return ::nanobind::make_tuple(
+                ::nanobind::cast(f0.default_value), ::nanobind::cast(rest.default_value)...
+            );
+        } else {
+            return ::nanobind::none();
+        }
     } else if constexpr (sizeof...(Rest) == 0) {
         return ::nanobind::none();
     } else {
@@ -221,6 +216,24 @@ template <typename... Fs> inline ::nanobind::object make_defaults_from(const Fs 
     } else {
         return make_defaults_tuple_head(fs...);
     }
+}
+
+// Fold helpers replacing the ``std::apply`` sites in ``bind_namedtuple``.
+// Each takes the ``Traits::fields()`` tuple and an index sequence and
+// expands the pack via ``.template get<I>()`` on the nanobind tuple.
+template <typename Fields, std::size_t... I>
+inline ::nanobind::object make_names_object(const Fields &fs, std::index_sequence<I...>) {
+    return ::nanobind::make_tuple(::nanobind::str(fs.template get<I>().name)...);
+}
+
+template <typename Fields, std::size_t... I>
+inline ::nanobind::object make_defaults_object(const Fields &fs, std::index_sequence<I...>) {
+    return make_defaults_from(fs.template get<I>()...);
+}
+
+template <typename Fields, typename Fn, std::size_t... I>
+inline void for_each_field(const Fields &fs, Fn &&fn, std::index_sequence<I...>) {
+    (fn(fs.template get<I>()), ...);
 }
 
 // Compile-time-derived Python annotation string for a single field type.
@@ -301,7 +314,7 @@ template <typename Type, typename Fields, typename Src>
 inline ::nanobind::handle named_tuple_from_cpp(
     Src &&src, ::nanobind::rv_policy policy, ::nanobind::detail::cleanup_list *cleanup
 ) noexcept {
-    constexpr std::size_t N = std::tuple_size_v<Fields>;
+    constexpr std::size_t N = field_pack_size_v<Fields>;
     PyObject *cls = load_nt_cls_hot<Type>();
     if (!cls) {
         PyErr_Format(
@@ -384,7 +397,7 @@ template <typename Type, typename Fields>
 inline bool named_tuple_from_python(
     ::nanobind::handle src, uint8_t flags, ::nanobind::detail::cleanup_list *cleanup, Type &out
 ) noexcept {
-    constexpr std::size_t N = std::tuple_size_v<Fields>;
+    constexpr std::size_t N = field_pack_size_v<Fields>;
     PyObject *src_ptr = src.ptr();
     if (!src_ptr)
         return false;
@@ -396,9 +409,69 @@ inline bool named_tuple_from_python(
         return false;
     if (PyTuple_GET_SIZE(src_ptr) != static_cast<Py_ssize_t>(N))
         return false;
-    return named_tuple_from_python_impl<Type, Fields>(
-        src, flags, cleanup, out, std::make_index_sequence<N>{}
+    if constexpr (N == 0) {
+        (void)flags;
+        (void)cleanup;
+        (void)out;
+        return true;
+    } else {
+        return named_tuple_from_python_impl<Type, Fields>(
+            src, flags, cleanup, out, std::make_index_sequence<N>{}
+        );
+    }
+}
+
+// Cache the ``collections.namedtuple`` factory in a single non-template
+// function-local static. The reference is intentionally leaked for the
+// process lifetime so no C++ static destructor touches Python state after
+// ``Py_Finalize``. Returns a borrowed reference.
+inline PyObject *nt_factory_cached() {
+    static PyObject *factory = []() {
+        ::nanobind::object f = ::nanobind::module_::import_("collections").attr("namedtuple");
+        return f.release().ptr();
+    }();
+    return factory;
+}
+
+// Type-independent registration tail: invoke ``collections.namedtuple`` and
+// attach the stubgen sentinel and per-field annotation metadata to the
+// freshly-minted class. ``__annotations__`` gets its own dict (via
+// ``PyDict_Copy``) so user mutation cannot corrupt the
+// ``__nb_nt_annotations__`` sentinel that the stubgen hook keys on. Setting
+// the attributes here (rather than post-CAS) keeps the class fully
+// populated before any other thread can observe it through the
+// publication's release-store. Returns a new owning reference (strong).
+NB_NOINLINE inline PyObject *nt_finalize_class(
+    PyObject *m_ptr, const char *class_name, PyObject *names, PyObject *defaults,
+    PyObject *annotations
+) {
+    ::nanobind::object cls_obj = ::nanobind::borrow(nt_factory_cached())(
+        ::nanobind::str(class_name), ::nanobind::borrow(names),
+        ::nanobind::arg("defaults") = ::nanobind::borrow(defaults),
+        ::nanobind::arg("module") = ::nanobind::borrow(m_ptr).attr("__name__")
     );
+
+    PyObject *annotations_copy = PyDict_Copy(annotations);
+    if (annotations_copy == nullptr)
+        throw ::nanobind::python_error();
+    ::nanobind::dict annotations_public = ::nanobind::steal<::nanobind::dict>(annotations_copy);
+    if (PyObject_SetAttrString(cls_obj.ptr(), "__nb_named_tuple__", Py_True) < 0)
+        throw ::nanobind::python_error();
+    if (PyObject_SetAttrString(cls_obj.ptr(), "__nb_nt_annotations__", annotations) < 0)
+        throw ::nanobind::python_error();
+    if (PyObject_SetAttrString(cls_obj.ptr(), "__annotations__", annotations_public.ptr()) < 0)
+        throw ::nanobind::python_error();
+
+    return cls_obj.release().ptr();
+}
+
+// Attach the (published) class object to ``m`` under ``class_name``. The
+// module-attach step is factored out to keep the per-``T`` template body
+// free of another ``PyObject_SetAttrString`` copy.
+NB_NOINLINE inline void
+nt_attach_to_module(PyObject *m_ptr, const char *class_name, PyObject *cls) {
+    if (PyObject_SetAttrString(m_ptr, class_name, cls) < 0)
+        throw ::nanobind::python_error();
 }
 
 } // namespace detail
@@ -418,65 +491,35 @@ template <typename T> inline void bind_namedtuple(::nanobind::module_ m) {
     // Fast idempotent-reattach path: another module already published a
     // class for ``T``; adopt it and attach as a module attribute.
     if (PyObject *existing = detail::load_nt_cls_cold<T>()) {
-        if (PyObject_SetAttrString(m.ptr(), Traits::class_name, existing) < 0)
-            throw ::nanobind::python_error();
+        detail::nt_attach_to_module(m.ptr(), Traits::class_name, existing);
         return;
     }
 
-    // Assemble the field-names tuple and the trailing-defaults tuple from
-    // the compile-time metadata.
+    // Assemble the field-names tuple, trailing-defaults tuple, and
+    // per-field annotation-string dict from the compile-time metadata.
+    // Annotation strings are derived from each field caster's compile-time
+    // ``Name`` descr; casters with type-substitution slots fall back to
+    // ``"typing.Any"``.
     auto fields = Traits::fields();
-    ::nanobind::object names = std::apply(
-        [](const auto &...fs) { return ::nanobind::make_tuple(::nanobind::str(fs.name)...); },
-        fields
-    );
+    constexpr std::size_t N = detail::field_pack_size_v<Fields>;
+    ::nanobind::object names = detail::make_names_object(fields, std::make_index_sequence<N>{});
     ::nanobind::object defaults =
-        std::apply([](const auto &...fs) { return detail::make_defaults_from(fs...); }, fields);
-
-    // Cache the ``collections.namedtuple`` factory in a function-local
-    // static holding a raw ``PyObject *``. The reference is intentionally
-    // leaked for the process lifetime so no C++ static destructor touches
-    // Python state after ``Py_Finalize``.
-    static PyObject *nt_factory = []() {
-        ::nanobind::object f = ::nanobind::module_::import_("collections").attr("namedtuple");
-        return f.release().ptr();
-    }();
-
-    ::nanobind::object cls_obj = ::nanobind::borrow(nt_factory)(
-        ::nanobind::str(Traits::class_name), names, ::nanobind::arg("defaults") = defaults,
-        ::nanobind::arg("module") = m.attr("__name__")
-    );
-
-    // Attach the stubgen sentinel and per-field annotation metadata to the
-    // freshly-minted class before the CAS. Annotation strings are derived
-    // from each field caster's compile-time ``Name`` descr; casters with
-    // type-substitution slots fall back to ``"typing.Any"``. Setting the
-    // attributes here (rather than post-CAS) keeps the class fully
-    // populated before any other thread can observe it through the
-    // publication's release-store.
+        detail::make_defaults_object(fields, std::make_index_sequence<N>{});
     ::nanobind::dict annotations;
     auto add_annot = [&](const auto &f) {
         using field_value_type = typename std::remove_reference_t<decltype(f)>::value_type;
         annotations[::nanobind::str(f.name)] =
             ::nanobind::str(detail::field_annotation_str<field_value_type>());
     };
-    std::apply([&](const auto &...fs) { (add_annot(fs), ...); }, fields);
-    // Give ``__annotations__`` its own dict so user mutation cannot corrupt
-    // the ``__nb_nt_annotations__`` sentinel that the stubgen hook keys on.
-    PyObject *annotations_copy = PyDict_Copy(annotations.ptr());
-    if (annotations_copy == nullptr)
-        throw ::nanobind::python_error();
-    ::nanobind::dict annotations_public = ::nanobind::steal<::nanobind::dict>(annotations_copy);
-    if (PyObject_SetAttrString(cls_obj.ptr(), "__nb_named_tuple__", Py_True) < 0)
-        throw ::nanobind::python_error();
-    if (PyObject_SetAttrString(cls_obj.ptr(), "__nb_nt_annotations__", annotations.ptr()) < 0)
-        throw ::nanobind::python_error();
-    if (PyObject_SetAttrString(cls_obj.ptr(), "__annotations__", annotations_public.ptr()) < 0)
-        throw ::nanobind::python_error();
+    detail::for_each_field(fields, add_annot, std::make_index_sequence<N>{});
 
-    // Release into a raw PyObject* that we intentionally leak for the
-    // process lifetime on the winning branch; the losing branch drops it.
-    PyObject *candidate = cls_obj.release().ptr();
+    // Delegate the type-independent registration tail (factory call,
+    // sentinel + annotation attach, ``__annotations__`` decoupling) to a
+    // single non-template helper so each ``bind_namedtuple<T>`` only carries
+    // the per-``T`` publish-once CAS below.
+    PyObject *candidate = detail::nt_finalize_class(
+        m.ptr(), Traits::class_name, names.ptr(), defaults.ptr(), annotations.ptr()
+    );
 
     PyObject *winner = detail::publish_nt_cls<T>(candidate);
     if (winner != candidate) {
@@ -484,8 +527,7 @@ template <typename T> inline void bind_namedtuple(::nanobind::module_ m) {
         candidate = winner;
     }
 
-    if (PyObject_SetAttrString(m.ptr(), Traits::class_name, candidate) < 0)
-        throw ::nanobind::python_error();
+    detail::nt_attach_to_module(m.ptr(), Traits::class_name, candidate);
 }
 
 } // namespace nbnt
@@ -501,10 +543,10 @@ template <typename T> inline void bind_namedtuple(::nanobind::module_ m) {
     template <> struct traits<Type> {                                                              \
         using _nbnt_current_type [[maybe_unused]] = Type;                                          \
         static constexpr const char *class_name = ClassName;                                       \
-        using fields_t = decltype(::std::make_tuple(__VA_ARGS__));                                 \
+        using fields_t = decltype(::nanobind::detail::tuple(__VA_ARGS__));                         \
         static fields_t fields() {                                                                 \
             using _nbnt_current_type [[maybe_unused]] = Type;                                      \
-            return ::std::make_tuple(__VA_ARGS__);                                                 \
+            return ::nanobind::detail::tuple(__VA_ARGS__);                                         \
         }                                                                                          \
     };                                                                                             \
     }                                                                                              \
@@ -521,22 +563,7 @@ template <typename T> inline void bind_namedtuple(::nanobind::module_ m) {
         );                                                                                         \
                                                                                                    \
       public:                                                                                      \
-        using Value = Type;                                                                        \
-        template <typename T_> using Cast = ::nanobind::detail::movable_cast_t<T_>;                \
-        template <typename T_> static constexpr bool can_cast() {                                  \
-            return true;                                                                           \
-        }                                                                                          \
-        static constexpr auto Name = ::nanobind::detail::const_name(ClassName);                    \
-        Value value;                                                                               \
-        explicit operator Value *() {                                                              \
-            return &value;                                                                         \
-        }                                                                                          \
-        explicit operator Value &() {                                                              \
-            return value;                                                                          \
-        }                                                                                          \
-        explicit operator Value &&() {                                                             \
-            return static_cast<Value &&>(value);                                                   \
-        }                                                                                          \
+        NB_TYPE_CASTER(Type, ::nanobind::detail::const_name(ClassName))                            \
         bool from_python(                                                                          \
             ::nanobind::handle src, uint8_t flags, ::nanobind::detail::cleanup_list *cleanup       \
         ) noexcept {                                                                               \
@@ -551,16 +578,6 @@ template <typename T> inline void bind_namedtuple(::nanobind::module_ m) {
             return ::nbnt::detail::named_tuple_from_cpp<Type, _nbnt_fields_t>(                     \
                 ::std::forward<T_>(v), policy, cleanup                                             \
             );                                                                                     \
-        }                                                                                          \
-        template <                                                                                 \
-            typename T_,                                                                           \
-            ::nanobind::detail::enable_if_t<::std::is_same_v<::std::remove_cv_t<T_>, Type>> = 0>   \
-        static ::nanobind::handle from_cpp(                                                        \
-            T_ *v, ::nanobind::rv_policy policy, ::nanobind::detail::cleanup_list *cleanup         \
-        ) noexcept {                                                                               \
-            if (!v)                                                                                \
-                return ::nanobind::none().release();                                               \
-            return from_cpp(*v, policy, cleanup);                                                  \
         }                                                                                          \
     };                                                                                             \
     NAMESPACE_END(detail)                                                                          \
