@@ -14,8 +14,6 @@
 //     publishes it to a per-``T`` slot with publish-exactly-once
 //     semantics (first-registration wins).
 
-#include <optional>
-
 #include <nanobind/nanobind.h>
 
 #if defined(NB_FREE_THREADED)
@@ -36,28 +34,32 @@ template <auto MemberPtr> using value_of_t = decltype(value_of_member_ptr(Member
 //
 // ``MemberPtr`` is a non-type template parameter carrying the pointer to
 // the underlying C++ member. ``HasDefault`` encodes whether a default value
-// was supplied via ``.default_(...)``. ``name`` holds the Python-visible
-// name and ``default_value`` (present only when ``HasDefault``) holds the
-// value forwarded to ``collections.namedtuple``'s ``defaults=`` argument.
+// was supplied via ``.default_(...)``. The primary template describes a
+// field without a default and stores only ``name``; the ``HasDefault=true``
+// specialization additionally stores the value forwarded to
+// ``collections.namedtuple``'s ``defaults=`` argument directly (no
+// ``std::optional`` wrapping).
 template <auto MemberPtr, bool HasDefault = false> struct field {
     using value_type = detail::value_of_t<MemberPtr>;
     static constexpr auto member_ptr = MemberPtr;
-    static constexpr bool has_default_v = HasDefault;
+    static constexpr bool has_default_v = false;
 
     const char *name = nullptr;
-    std::optional<value_type> default_value;
 
     constexpr explicit field(const char *n) noexcept : name(n) {}
-    constexpr field(
-        const char *n, std::optional<value_type> d
-    ) noexcept(std::is_nothrow_move_constructible_v<std::optional<value_type>>)
-        : name(n), default_value(std::move(d)) {}
 
     template <typename V> field<MemberPtr, true> default_(V &&v) const {
-        return field<MemberPtr, true>(
-            name, std::optional<value_type>(std::in_place, std::forward<V>(v))
-        );
+        return field<MemberPtr, true>{name, value_type(std::forward<V>(v))};
     }
+};
+
+template <auto MemberPtr> struct field<MemberPtr, true> {
+    using value_type = detail::value_of_t<MemberPtr>;
+    static constexpr auto member_ptr = MemberPtr;
+    static constexpr bool has_default_v = true;
+
+    const char *name = nullptr;
+    value_type default_value;
 };
 
 namespace detail {
@@ -187,14 +189,20 @@ template <typename Fields> constexpr bool defaults_are_trailing() {
 // Build the ``defaults`` tuple to hand to ``collections.namedtuple``.
 // The trailing-suffix invariant is enforced by a static_assert in
 // ``bind_namedtuple<T>``, so once we hit the first defaulted field every
-// remaining field is also defaulted and ``.value()`` is safe.
+// remaining field is also defaulted. The inner ``if constexpr`` on the
+// trailing-invariant check keeps this function well-formed even on a
+// violating field list, so the clean static_assert in ``bind_namedtuple``
+// fires before any template error here.
 template <typename F0, typename... Rest>
 inline ::nanobind::object make_defaults_tuple_head(const F0 &f0, const Rest &...rest) {
     if constexpr (F0::has_default_v) {
-        return ::nanobind::make_tuple(
-            ::nanobind::cast(f0.default_value.value()),
-            ::nanobind::cast(rest.default_value.value())...
-        );
+        if constexpr ((Rest::has_default_v && ...)) {
+            return ::nanobind::make_tuple(
+                ::nanobind::cast(f0.default_value), ::nanobind::cast(rest.default_value)...
+            );
+        } else {
+            return ::nanobind::none();
+        }
     } else if constexpr (sizeof...(Rest) == 0) {
         return ::nanobind::none();
     } else {
