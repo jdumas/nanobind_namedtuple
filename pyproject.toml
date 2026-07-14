@@ -33,6 +33,7 @@ cmake.build-type = "Release"
 build.verbose = true
 logging.level = "INFO"
 wheel.py-api = "cp312"
+wheel.packages = ["stubgen/nanobind_namedtuple_stubgen"]
 
 [tool.scikit-build.cmake.define]
 NBNT_BUILD_EXAMPLES = "ON"
