@@ -142,16 +142,33 @@ attribute already exists), and `get_type_hints()` resolves.
 
 ## Stubgen
 
-`NamedTupleStubGen` subclasses `nanobind.stubgen.StubGen` and overrides one
-method, `put_type`. Detection uses the `__nb_named_tuple__` sentinel attached
-at bind time; anything without it falls through to the parent emitter, as do
-name or module mismatches (aliases, cross-module references) when the caller
-supplies a name. For recognized classes it emits a
-`class X(typing.NamedTuple):` block, reading field order from `_fields`,
-annotation strings from `__nb_nt_annotations__`, and defaults from
-`_field_defaults` — everything comes from the runtime class rather than the
-C++ declaration. Dotted names inside annotation strings are routed through
-`import_object` so the generated `.pyi` gets correct imports.
+The stubgen package works exclusively in *pattern-file mode*: it never emits
+stubs itself. It imports a built extension, finds the classes carrying the
+`__nb_named_tuple__` sentinel (restricted to classes actually defined in the
+scanned module — name and `__module__` must both match, so aliases and
+re-exports are skipped), and writes a nanobind stubgen pattern file. Vanilla
+`python -m nanobind.stubgen` (or `nanobind_add_stub()`) consumes it through
+the standard `-p` / `PATTERN_FILE` option and substitutes each entry's
+replacement block for its default `class X(tuple): ...` rendering.
+
+Pattern files are the deliberate choice of integration point. They are
+nanobind's official last-resort mechanism for customizing generated stubs,
+with a documented file format; subclassing `nanobind.stubgen.StubGen`, the
+previous approach, hooks an experimental API that is explicitly outside
+nanobind's semantic-versioning guarantees. The other sanctioned tool,
+`nb::sig`, overrides signatures of bound functions and classes — it has no
+purchase here because a registered namedtuple is a pure-Python
+`collections.namedtuple` class, not a nanobind type object. With the pattern
+file, nanobind's stubgen remains the sole emitter, and the generator's only
+contract is the documented file syntax.
+
+Each entry is an anchored, dot-escaped regex on the fully-qualified class
+name, followed by an indented replacement: `\from typing import NamedTuple`
+escape lines to register imports, then the `class X(NamedTuple):` block with
+field order from `_fields`, annotation strings from `__nb_nt_annotations__`,
+and defaults from `_field_defaults` — everything comes from the runtime class
+rather than the C++ declaration. Modules referenced by dotted names inside
+annotation strings are registered with `\import` escape lines.
 
 `collections.namedtuple` synthesizes a class docstring (`"Color(r, g, b)"`)
 and per-field docstrings (`"Alias for field number 0"`) on every class it
@@ -160,9 +177,10 @@ builds a throwaway reference `collections.namedtuple(name, fields)` and emits
 a docstring only when it differs from the reference's — CPython's synthetic
 phrasing is not a stable contract to hard-code.
 
-The `__main__` entry point reuses `nanobind.stubgen.main()` wholesale,
-temporarily swapping `StubGen` for `NamedTupleStubGen` — same CLI, one
-changed class, restored on exit.
+The `__main__` entry point takes `-m MODULE` (repeatable), `-i` import-path
+entries, `-r` for submodule recursion, and `-o` for the output pattern file —
+mirroring the corresponding `nanobind.stubgen` options so the two commands
+can share arguments in build scripts.
 
 ## Macro layer
 
