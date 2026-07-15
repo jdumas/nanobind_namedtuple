@@ -13,11 +13,14 @@ Registered classes carry two sentinel attributes attached at bind time:
   fields whose caster carries type-substitution slots).
 
 Default values come from :attr:`_field_defaults`, inherited from
-``collections.namedtuple``.
+``collections.namedtuple``. Docstrings set at bind time (class ``__doc__`` and
+per-field property ``__doc__``) are emitted into the stub; the synthetic
+docstrings ``collections.namedtuple`` generates on its own are suppressed.
 """
 
 from __future__ import annotations
 
+import collections
 import re
 from typing import Any
 
@@ -61,8 +64,12 @@ class NamedTupleStubGen(StubGen):
         self.write_ln(f"class {tp_name}({nt_ref}):")
         self.depth += 1
 
+        # Reference namedtuple whose synthetic docstrings ("Point(x, y)",
+        # "Alias for field number 0") identify docs not set at bind time.
+        reference = collections.namedtuple(tp_name, field_names)
+
         docstr = tp.__doc__
-        if docstr and self.include_docstrings:
+        if docstr and docstr != reference.__doc__ and self.include_docstrings:
             self.put_docstr(docstr)
             if field_names:
                 self.write("\n")
@@ -80,6 +87,10 @@ class NamedTupleStubGen(StubGen):
                 self.write_ln(f"{fname}: {annot_str} = {default_expr}")
             else:
                 self.write_ln(f"{fname}: {annot_str}")
+            if self.include_docstrings:
+                fdoc = getattr(getattr(tp, fname, None), "__doc__", None)
+                if fdoc and fdoc != getattr(reference, fname).__doc__:
+                    self.put_docstr(fdoc)
         self.write("\n")
         self.depth -= 1
 

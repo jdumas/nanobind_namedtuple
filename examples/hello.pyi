@@ -22,9 +22,13 @@ class Color(NamedTuple):
     b: float
 
 class Point(NamedTuple):
+    """A 2D point with an optional display label."""
+
     x: int
+    """X coordinate."""
     y: int
     label: str = ""
+    """Display label."""
 
 class Empty(NamedTuple):
     pass
@@ -44,6 +48,7 @@ class Pixel(NamedTuple):
 class Tagged(NamedTuple):
     value: int
     tag: int | None = None
+    """Optional integer tag."""
 
 class Polyline(NamedTuple):
     points: list[tuple[int, int]]

@@ -7,6 +7,8 @@ Covers:
 * ``NamedTupleStubGen`` overriding nanobind's default ``class X(tuple): ...``
   emission with canonical ``class X(typing.NamedTuple):`` blocks that include
   annotations and trailing defaults;
+* class and per-field docstrings set at bind time surfacing in the stub while
+  synthetic ``collections.namedtuple`` docstrings stay suppressed;
 * the fallback to nanobind's default emitter for classes without the sentinel.
 """
 
@@ -101,8 +103,8 @@ def test_annotations_and_sentinel_are_distinct_dict_objects():
         color.__annotations__["r"] = "float"
 
 
-def _generate_stub(cls, *, hook):
-    gen = hook(module=nbnt_example_hello, include_docstrings=False)
+def _generate_stub(cls, *, hook, include_docstrings=False):
+    gen = hook(module=nbnt_example_hello, include_docstrings=include_docstrings)
     gen.put(cls, name=cls.__name__, parent=nbnt_example_hello)
     return gen.get()
 
@@ -135,6 +137,45 @@ def test_hook_emits_clean_annotations_for_stl_caster_fields():
     # Import lines must name plain symbols, never subscripted expressions.
     import_lines = [ln for ln in stub.splitlines() if ln.startswith(("import ", "from "))]
     assert all("[" not in ln for ln in import_lines), import_lines
+
+
+def test_hook_emits_class_docstring_for_documented_class():
+    stub = _generate_stub(nbnt_example_hello.Point, hook=NamedTupleStubGen, include_docstrings=True)
+    assert '"""A 2D point with an optional display label."""' in stub
+
+
+def test_hook_emits_field_docstring_under_documented_field():
+    stub = _generate_stub(nbnt_example_hello.Point, hook=NamedTupleStubGen, include_docstrings=True)
+    assert re.search(r'x: int\n\s+"""X coordinate\."""', stub)
+    assert re.search(r"y: int\n\s+label:", stub)
+
+
+def test_hook_emits_field_docstring_after_default_value():
+    stub = _generate_stub(nbnt_example_hello.Point, hook=NamedTupleStubGen, include_docstrings=True)
+    assert re.search(r"label: str = ['\"]{2}\n\s+\"\"\"Display label\.\"\"\"", stub)
+
+    tagged = _generate_stub(
+        nbnt_example_hello.Tagged, hook=NamedTupleStubGen, include_docstrings=True
+    )
+    assert re.search(r'tag: .+ = None\n\s+"""Optional integer tag\."""', tagged)
+
+
+def test_hook_emits_no_synthetic_docstrings_for_undocumented_class():
+    with_docs = _generate_stub(
+        nbnt_example_hello.Color, hook=NamedTupleStubGen, include_docstrings=True
+    )
+    without_docs = _generate_stub(nbnt_example_hello.Color, hook=NamedTupleStubGen)
+    assert (
+        with_docs[with_docs.index("class Color") :]
+        == without_docs[without_docs.index("class Color") :]
+    )
+    assert "Color(r, g, b)" not in with_docs
+    assert "Alias for field number" not in with_docs
+
+
+def test_hook_omits_docstrings_when_disabled():
+    stub = _generate_stub(nbnt_example_hello.Point, hook=NamedTupleStubGen)
+    assert '"""' not in stub
 
 
 def test_hook_emits_pass_for_zero_field_record():
