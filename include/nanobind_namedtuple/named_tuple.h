@@ -255,6 +255,22 @@ template <typename Field> inline const char *field_annotation_str() noexcept {
     }
 }
 
+// True when an annotation mentions ``typing.``; such strings only evaluate
+// under ``typing.get_type_hints()`` if the owning module can resolve ``typing``.
+constexpr bool annotation_references_typing(const char *s) noexcept {
+    for (; *s != '\0'; ++s) {
+        const char *p = s;
+        const char *q = "typing.";
+        while (*q != '\0' && *p == *q) {
+            ++p;
+            ++q;
+        }
+        if (*q == '\0')
+            return true;
+    }
+    return false;
+}
+
 // Child rv_policy: reference/automatic_reference downgrade to copy (move
 // for rvalue parents); copy/move/automatic/none pass through unchanged.
 template <typename Src>
@@ -473,12 +489,19 @@ template <typename T> inline void bind_namedtuple(::nanobind::module_ m) {
     ::nanobind::object defaults =
         detail::make_defaults_object(fields, std::make_index_sequence<N>{});
     ::nanobind::dict annotations;
+    bool needs_typing = false;
     auto add_annot = [&](const auto &f) {
         using field_value_type = typename std::remove_reference_t<decltype(f)>::value_type;
-        annotations[::nanobind::str(f.name)] =
-            ::nanobind::str(detail::field_annotation_str<field_value_type>());
+        const char *annot = detail::field_annotation_str<field_value_type>();
+        needs_typing = needs_typing || detail::annotation_references_typing(annot);
+        annotations[::nanobind::str(f.name)] = ::nanobind::str(annot);
     };
     detail::for_each_field(fields, add_annot, std::make_index_sequence<N>{});
+
+    // Make ``typing.``-prefixed annotations resolvable for get_type_hints(),
+    // mirroring the ``import typing`` a hand-written module would carry.
+    if (needs_typing && !::nanobind::hasattr(m, "typing"))
+        m.attr("typing") = ::nanobind::module_::import_("typing");
 
     // Delegate the type-independent tail to a non-template helper so each
     // bind_namedtuple<T> only carries the per-T publish-once CAS below.
