@@ -31,7 +31,7 @@ def _write_project(project_dir: Path, extra_args: str = "") -> None:
     project_dir.mkdir()
     (project_dir / "CMakeLists.txt").write_text(
         f"""
-cmake_minimum_required(VERSION 3.17)
+cmake_minimum_required(VERSION 3.15)
 project(pattern_helper_test NONE)
 include("{HELPER_MODULE.as_posix()}")
 nanobind_namedtuple_stub_pattern(

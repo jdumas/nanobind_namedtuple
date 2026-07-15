@@ -14,7 +14,16 @@
 #       [COMPONENT <comp>]       # install component (INSTALL_TIME only)
 #       [EXCLUDE_FROM_ALL]       # exclude from default installation
 #       [VERBOSE]                # show generator output during the build
+#                                # (build-time mode only; install(CODE) rules
+#                                # always stream their output)
 #   )
+
+# Captured at include time (CMAKE_CURRENT_FUNCTION_LIST_DIR needs CMake 3.17;
+# floor is 3.15); INTERNAL cache keeps it visible from any consumer scope.
+get_filename_component(NBNT_STUBGEN_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/../stubgen" ABSOLUTE)
+set(NBNT_STUBGEN_SOURCE_DIR
+    "${NBNT_STUBGEN_SOURCE_DIR}"
+    CACHE INTERNAL "Directory containing the nanobind_namedtuple_stubgen package")
 
 function(nanobind_namedtuple_stub_pattern)
     cmake_parse_arguments(PARSE_ARGV 0 ARG "INSTALL_TIME;RECURSIVE;VERBOSE;EXCLUDE_FROM_ALL"
@@ -43,27 +52,28 @@ function(nanobind_namedtuple_stub_pattern)
     endif()
 
     # The generator package ships in this repository's stubgen/ directory;
-    # expose it through PYTHONPATH so consumers never set import paths for it.
-    get_filename_component(NBNT_STUBGEN_DIR "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../stubgen"
-                           ABSOLUTE)
+    # expose it by prepending it to any ambient (configure-time) PYTHONPATH.
+    set(NBNT_PYTHONPATH "${NBNT_STUBGEN_SOURCE_DIR}")
+    if(DEFINED ENV{PYTHONPATH})
+        if(CMAKE_HOST_WIN32)
+            string(APPEND NBNT_PYTHONPATH ";$ENV{PYTHONPATH}")
+        else()
+            string(APPEND NBNT_PYTHONPATH ":$ENV{PYTHONPATH}")
+        endif()
+    endif()
     file(TO_CMAKE_PATH "${Python_EXECUTABLE}" NBNT_PYTHON_EXECUTABLE)
-    set(NBNT_STUBGEN_CMD
-        ${CMAKE_COMMAND}
-        -E
-        env
-        "PYTHONPATH=${NBNT_STUBGEN_DIR}"
-        "${NBNT_PYTHON_EXECUTABLE}"
-        -m
-        nanobind_namedtuple_stubgen
-        ${NBNT_STUBGEN_ARGS})
+    set(NBNT_STUBGEN_CMD "${NBNT_PYTHON_EXECUTABLE}" -m nanobind_namedtuple_stubgen
+                         ${NBNT_STUBGEN_ARGS})
 
     if(NOT ARG_INSTALL_TIME)
         if(ARG_VERBOSE)
             set(NBNT_STUBGEN_EXTRA USES_TERMINAL)
         endif()
+        # PYTHONPATH stays a single quoted argument so a Windows ";" list
+        # separator inside its value cannot split the command.
         add_custom_command(
             OUTPUT "${ARG_OUTPUT}"
-            COMMAND ${NBNT_STUBGEN_CMD}
+            COMMAND ${CMAKE_COMMAND} -E env "PYTHONPATH=${NBNT_PYTHONPATH}" ${NBNT_STUBGEN_CMD}
             WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
             DEPENDS ${ARG_DEPENDS} ${NBNT_STUBGEN_EXTRA})
         # Driving target named after the output file (e.g. my_ext.pat ->
@@ -79,13 +89,13 @@ function(nanobind_namedtuple_stub_pattern)
         if(ARG_EXCLUDE_FROM_ALL)
             list(APPEND NBNT_INSTALL_EXTRA EXCLUDE_FROM_ALL)
         endif()
-        # Same working directory as nanobind_add_stub(INSTALL_TIME): relative
-        # OUTPUT/PYTHON_PATH entries resolve against the install prefix.
+        # Working directory matches nanobind_add_stub(INSTALL_TIME); the quoted
+        # PYTHONPATH keeps a Windows ";" separator intact in the install script.
         install(
             CODE "set(NBNT_CMD \"${NBNT_STUBGEN_CMD}\")
 file(MAKE_DIRECTORY \"\${CMAKE_INSTALL_PREFIX}\")
 execute_process(
-    COMMAND \${NBNT_CMD}
+    COMMAND \"${CMAKE_COMMAND}\" -E env \"PYTHONPATH=${NBNT_PYTHONPATH}\" \${NBNT_CMD}
     WORKING_DIRECTORY \"\${CMAKE_INSTALL_PREFIX}\"
     COMMAND_ERROR_IS_FATAL ANY)"
             ${NBNT_INSTALL_EXTRA})
