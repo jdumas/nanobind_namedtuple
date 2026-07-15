@@ -63,12 +63,6 @@ Three declaration macros cover increasing levels of control:
 `NB_NAMED_TUPLE` and `NB_NAMED_TUPLE_AS` accept at most 16 bare field names —
 beyond that a `static_assert` points at `NB_NAMED_TUPLE_EX`, which has no cap.
 
-> **Breaking change:** `NB_NAMED_TUPLE` used to take a class-name string and
-> `NB_NT_FIELD(...)` wrappers. Replace
-> `NB_NAMED_TUPLE(Color, "Color", NB_NT_FIELD(r), ...)` with
-> `NB_NAMED_TUPLE(Color, r, ...)`, or use `NB_NAMED_TUPLE_AS` /
-> `NB_NAMED_TUPLE_EX` when an explicit name or field descriptors are needed.
-
 ## Nested records
 
 Fields whose types are themselves `NB_NAMED_TUPLE`-bound records nest
