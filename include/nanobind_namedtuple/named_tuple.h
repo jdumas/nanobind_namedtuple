@@ -30,19 +30,28 @@ template <auto MemberPtr> using value_of_t = decltype(value_of_member_ptr(Member
 
 } // namespace detail
 
-// Compile-time field descriptor: stores the member pointer and name; the
-// HasDefault=true specialization also holds the default_ value verbatim.
+// Compile-time field descriptor: stores the member pointer, name, and an
+// optional ``.doc(...)`` string; the HasDefault=true specialization also
+// holds the default_ value verbatim. ``.doc`` and ``.default_`` chain in
+// either order.
 template <auto MemberPtr, bool HasDefault = false> struct field {
     using value_type = detail::value_of_t<MemberPtr>;
     static constexpr auto member_ptr = MemberPtr;
     static constexpr bool has_default_v = false;
 
     const char *name = nullptr;
+    const char *doc_str = nullptr;
 
     constexpr explicit field(const char *n) noexcept : name(n) {}
 
     template <typename V> field<MemberPtr, true> default_(V &&v) const {
-        return field<MemberPtr, true>{name, value_type(std::forward<V>(v))};
+        return field<MemberPtr, true>{name, value_type(std::forward<V>(v)), doc_str};
+    }
+
+    constexpr field doc(const char *d) const noexcept {
+        field f(name);
+        f.doc_str = d;
+        return f;
     }
 };
 
@@ -53,6 +62,11 @@ template <auto MemberPtr> struct field<MemberPtr, true> {
 
     const char *name = nullptr;
     value_type default_value;
+    const char *doc_str = nullptr;
+
+    field doc(const char *d) const {
+        return field{name, default_value, d};
+    }
 };
 
 namespace detail {
@@ -427,11 +441,12 @@ inline PyObject *nt_factory_cached() {
     return factory;
 }
 
-// Registration tail: factory + sentinels set pre-CAS (fully populated when
-// observed); ``__annotations__`` is a copy protecting ``__nb_nt_annotations__``. Strong ref.
+// Registration tail: factory + sentinels + optional class docstring set
+// pre-CAS (fully populated when observed); ``__annotations__`` is a copy
+// protecting ``__nb_nt_annotations__``. Strong ref.
 NB_NOINLINE inline PyObject *nt_finalize_class(
     PyObject *m_ptr, const char *class_name, PyObject *names, PyObject *defaults,
-    PyObject *annotations
+    PyObject *annotations, const char *cls_doc
 ) {
     ::nanobind::object cls_obj = ::nanobind::borrow(nt_factory_cached())(
         ::nanobind::str(class_name), ::nanobind::borrow(names),
@@ -449,8 +464,23 @@ NB_NOINLINE inline PyObject *nt_finalize_class(
         throw ::nanobind::python_error();
     if (PyObject_SetAttrString(cls_obj.ptr(), "__annotations__", annotations_public.ptr()) < 0)
         throw ::nanobind::python_error();
+    if (cls_doc != nullptr) {
+        ::nanobind::str doc_obj(cls_doc);
+        if (PyObject_SetAttrString(cls_obj.ptr(), "__doc__", doc_obj.ptr()) < 0)
+            throw ::nanobind::python_error();
+    }
 
     return cls_obj.release().ptr();
+}
+
+// Set ``__doc__`` on the property object backing one namedtuple field;
+// applied to the candidate class before publication so only the winning
+// registration's docstrings are observable.
+NB_NOINLINE inline void nt_set_field_doc(PyObject *cls, const char *name, const char *doc) {
+    ::nanobind::object prop = ::nanobind::borrow(cls).attr(name);
+    ::nanobind::str doc_obj(doc);
+    if (PyObject_SetAttrString(prop.ptr(), "__doc__", doc_obj.ptr()) < 0)
+        throw ::nanobind::python_error();
 }
 
 // Attach the published class to ``m`` under ``class_name``; factored out
@@ -464,8 +494,10 @@ nt_attach_to_module(PyObject *m_ptr, const char *class_name, PyObject *cls) {
 } // namespace detail
 
 // Register the Python namedtuple class for ``T`` and attach it to ``m``.
-// Publish-exactly-once (first-registration wins) process-wide.
-template <typename T> inline void bind_namedtuple(::nanobind::module_ m) {
+// Publish-exactly-once (first-registration wins) process-wide. ``cls_doc``,
+// when non-null, becomes the class ``__doc__``.
+template <typename T>
+inline void bind_namedtuple(::nanobind::module_ m, const char *cls_doc = nullptr) {
     using Traits = detail::traits<T>;
     using Fields = typename Traits::fields_t;
     static_assert(
@@ -506,8 +538,16 @@ template <typename T> inline void bind_namedtuple(::nanobind::module_ m) {
     // Delegate the type-independent tail to a non-template helper so each
     // bind_namedtuple<T> only carries the per-T publish-once CAS below.
     PyObject *candidate = detail::nt_finalize_class(
-        m.ptr(), Traits::class_name, names.ptr(), defaults.ptr(), annotations.ptr()
+        m.ptr(), Traits::class_name, names.ptr(), defaults.ptr(), annotations.ptr(), cls_doc
     );
+
+    // Per-field docstrings go on the candidate before the publish CAS so
+    // only the winning registration's docs are ever observable.
+    auto add_doc = [&](const auto &f) {
+        if (f.doc_str != nullptr)
+            detail::nt_set_field_doc(candidate, f.name, f.doc_str);
+    };
+    detail::for_each_field(fields, add_doc, std::make_index_sequence<N>{});
 
     PyObject *winner = detail::publish_nt_cls<T>(candidate);
     if (winner != candidate) {
