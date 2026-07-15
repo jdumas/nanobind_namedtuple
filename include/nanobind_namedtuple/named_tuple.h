@@ -215,12 +215,41 @@ inline void for_each_field(const Fields &fs, Fn &&fn, std::index_sequence<I...>)
     (fn(fs.template get<I>()), ...);
 }
 
-// Python annotation string for a field: caster's Name text when it has no
-// type-substitution slots, otherwise ``"typing.Any"`` for stubgen.
+// Fixed-size character buffer for a compile-time sanitized annotation.
+template <std::size_t N> struct annot_text {
+    char data[N]{};
+};
+
+// Collapse each ``@input@output@`` stubgen marker in a caster Name to its
+// output side, matching nanobind's return-value signature rendering.
+template <std::size_t N> constexpr annot_text<N> sanitize_annotation(const char (&text)[N]) {
+    annot_text<N> out{};
+    std::size_t j = 0;
+    for (std::size_t i = 0; text[i] != '\0';) {
+        if (text[i] == '@') {
+            ++i;
+            while (text[i] != '\0' && text[i] != '@')
+                ++i;
+            if (text[i] == '@')
+                ++i;
+            while (text[i] != '\0' && text[i] != '@')
+                out.data[j++] = text[i++];
+            if (text[i] == '@')
+                ++i;
+        } else {
+            out.data[j++] = text[i++];
+        }
+    }
+    return out;
+}
+
+// Python annotation string for a field: caster's sanitized Name text when
+// it has no type-substitution slots, otherwise ``"typing.Any"`` for stubgen.
 template <typename Field> inline const char *field_annotation_str() noexcept {
     using caster_t = ::nanobind::detail::make_caster<Field>;
     if constexpr (caster_t::Name.type_count() == 0) {
-        return caster_t::Name.text;
+        static constexpr auto sanitized = sanitize_annotation(caster_t::Name.text);
+        return sanitized.data;
     } else {
         return "typing.Any";
     }
@@ -478,7 +507,6 @@ template <typename T> inline void bind_namedtuple(::nanobind::module_ m) {
         static constexpr const char *class_name = ClassName;                                       \
         using fields_t = decltype(::nanobind::detail::tuple(__VA_ARGS__));                         \
         static fields_t fields() {                                                                 \
-            using _nbnt_current_type [[maybe_unused]] = Type;                                      \
             return ::nanobind::detail::tuple(__VA_ARGS__);                                         \
         }                                                                                          \
     };                                                                                             \

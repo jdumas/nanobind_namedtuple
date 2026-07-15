@@ -1,9 +1,13 @@
 #include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <nanobind/nanobind.h>
 #include <nanobind/stl/optional.h>
+#include <nanobind/stl/pair.h>
 #include <nanobind/stl/string.h>
+#include <nanobind/stl/vector.h>
 
 #include <nanobind_namedtuple/named_tuple.h>
 
@@ -47,6 +51,13 @@ struct Tagged {
     std::optional<int> tag;
 };
 
+// Record with STL-caster fields whose Name descriptors carry ``@in@out@``
+// stubgen markers; exercises the annotation sanitization path.
+struct Polyline {
+    std::vector<std::pair<int, int>> points;
+    std::optional<float> width;
+};
+
 NB_NAMED_TUPLE(Color, "Color", NB_NT_FIELD(r), NB_NT_FIELD(g), NB_NT_FIELD(b))
 
 NB_NAMED_TUPLE_EX(
@@ -67,6 +78,8 @@ NB_NAMED_TUPLE_EX(
     nbnt::field<&Tagged::tag>("tag").default_(std::optional<int>{})
 )
 
+NB_NAMED_TUPLE(Polyline, "Polyline", NB_NT_FIELD(points), NB_NT_FIELD(width))
+
 NB_MODULE(nbnt_example_hello, m) {
     m.doc() = "Minimal nanobind extension used by the nanobind_namedtuple test suite.";
     m.def("hello", []() { return "hello from nanobind_namedtuple"; });
@@ -79,6 +92,7 @@ NB_MODULE(nbnt_example_hello, m) {
     nbnt::bind_namedtuple<Payload>(m);
     nbnt::bind_namedtuple<Pixel>(m);
     nbnt::bind_namedtuple<Tagged>(m);
+    nbnt::bind_namedtuple<Polyline>(m);
 
     m.def("rebind_color", [](nb::module_ mod) { nbnt::bind_namedtuple<Color>(mod); });
 
@@ -105,6 +119,11 @@ NB_MODULE(nbnt_example_hello, m) {
 
     m.def("make_tagged", [](int value, std::optional<int> tag) { return Tagged{value, tag}; });
     m.def("tagged_tag", [](Tagged t) { return t.tag; });
+
+    m.def("make_polyline", [](std::vector<std::pair<int, int>> points, std::optional<float> width) {
+        return Polyline{std::move(points), width};
+    });
+    m.def("polyline_points", [](Polyline p) { return p.points; });
 
     // rv_policy fixtures: reference/automatic_reference downgrade to copy
     // (move for rvalue sources); reference_internal/take_ownership raise TypeError.
