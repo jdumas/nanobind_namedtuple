@@ -18,11 +18,16 @@ Default values come from :attr:`_field_defaults`, inherited from
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from nanobind.stubgen import StubGen
 
 __all__ = ["NamedTupleStubGen", "is_namedtuple_class"]
+
+# Dotted names inside an annotation string, e.g. ``typing.Optional`` in
+# ``typing.Optional[float]``; subscripts and punctuation are left intact.
+_DOTTED_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+")
 
 
 def is_namedtuple_class(tp: Any) -> bool:
@@ -79,10 +84,12 @@ class NamedTupleStubGen(StubGen):
         self.depth -= 1
 
     def _rewrite_annotation(self, annot: str) -> str:
-        """Route dotted annotations through :meth:`import_object` for import bookkeeping."""
+        """Route each dotted name through :meth:`import_object` for import bookkeeping."""
         if not annot:
             return "typing.Any"
-        if "." in annot:
-            module_name, _, leaf = annot.rpartition(".")
+
+        def rewrite(match: re.Match[str]) -> str:
+            module_name, _, leaf = match.group().rpartition(".")
             return self.import_object(module_name, leaf)
-        return annot
+
+        return _DOTTED_NAME_RE.sub(rewrite, annot)

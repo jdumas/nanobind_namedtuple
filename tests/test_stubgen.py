@@ -13,13 +13,22 @@ Covers:
 from __future__ import annotations
 
 import re
+import sys
+import typing
 
 import pytest
 from nanobind.stubgen import StubGen
 from nanobind_namedtuple_examples import nbnt_example_hello
 from nanobind_namedtuple_stubgen import NamedTupleStubGen, is_namedtuple_class
 
-NT_CLASSES = ("Color", "Point", "Empty", "Vec3", "Payload", "Pixel", "Tagged")
+NT_CLASSES = ("Color", "Point", "Empty", "Vec3", "Payload", "Pixel", "Tagged", "Polyline")
+
+
+def _optional(inner: str) -> str:
+    """Optional annotation as nanobind renders it for the running interpreter."""
+    if sys.version_info >= (3, 10):
+        return f"{inner} | None"
+    return f"typing.Optional[{inner}]"
 
 
 @pytest.mark.parametrize("cls_name", NT_CLASSES)
@@ -51,6 +60,31 @@ def test_annotations_attribute_populated_with_string_types():
         "g": "float",
         "b": "float",
     }
+
+
+@pytest.mark.parametrize("cls_name", NT_CLASSES)
+def test_annotations_carry_no_stubgen_markup(cls_name):
+    cls = getattr(nbnt_example_hello, cls_name)
+    for mapping in (cls.__annotations__, cls.__nb_nt_annotations__):
+        for fname, annot in mapping.items():
+            assert "@" not in annot, f"{cls_name}.{fname}: {annot!r}"
+
+
+def test_stl_caster_annotations_are_clean_type_expressions():
+    assert nbnt_example_hello.Polyline.__annotations__ == {
+        "points": "list[tuple[int, int]]",
+        "width": _optional("float"),
+    }
+    assert nbnt_example_hello.Tagged.__annotations__ == {
+        "value": "int",
+        "tag": _optional("int"),
+    }
+
+
+def test_get_type_hints_succeeds_on_stl_caster_fields():
+    hints = typing.get_type_hints(nbnt_example_hello.Polyline)
+    assert hints["points"] == list[tuple[int, int]]
+    assert hints["width"] == typing.Optional[float]
 
 
 def test_annotations_and_sentinel_are_distinct_dict_objects():
@@ -87,6 +121,20 @@ def test_hook_emits_defaults_from_field_defaults():
     assert "x: int" in stub
     assert "y: int" in stub
     assert re.search(r"label: str = ['\"]{2}", stub)
+
+
+def test_hook_emits_clean_annotations_for_stl_caster_fields():
+    stub = _generate_stub(nbnt_example_hello.Polyline, hook=NamedTupleStubGen)
+    assert re.search(r"class Polyline\((?:typing\.)?NamedTuple\):", stub)
+    assert "points: list[tuple[int, int]]" in stub
+    if sys.version_info >= (3, 10):
+        assert "width: float | None" in stub
+    else:
+        assert "width: Optional[float]" in stub
+    assert "@" not in stub
+    # Import lines must name plain symbols, never subscripted expressions.
+    import_lines = [ln for ln in stub.splitlines() if ln.startswith(("import ", "from "))]
+    assert all("[" not in ln for ln in import_lines), import_lines
 
 
 def test_hook_emits_pass_for_zero_field_record():

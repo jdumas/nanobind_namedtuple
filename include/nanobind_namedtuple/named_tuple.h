@@ -215,15 +215,60 @@ inline void for_each_field(const Fields &fs, Fn &&fn, std::index_sequence<I...>)
     (fn(fs.template get<I>()), ...);
 }
 
-// Python annotation string for a field: caster's Name text when it has no
-// type-substitution slots, otherwise ``"typing.Any"`` for stubgen.
+// Fixed-size character buffer for a compile-time sanitized annotation.
+template <std::size_t N> struct annot_text {
+    char data[N]{};
+};
+
+// Collapse each ``@input@output@`` stubgen marker in a caster Name to its
+// output side, matching nanobind's return-value signature rendering.
+template <std::size_t N> constexpr annot_text<N> sanitize_annotation(const char (&text)[N]) {
+    annot_text<N> out{};
+    std::size_t j = 0;
+    for (std::size_t i = 0; text[i] != '\0';) {
+        if (text[i] == '@') {
+            ++i;
+            while (text[i] != '\0' && text[i] != '@')
+                ++i;
+            if (text[i] == '@')
+                ++i;
+            while (text[i] != '\0' && text[i] != '@')
+                out.data[j++] = text[i++];
+            if (text[i] == '@')
+                ++i;
+        } else {
+            out.data[j++] = text[i++];
+        }
+    }
+    return out;
+}
+
+// Python annotation string for a field: caster's sanitized Name text when
+// it has no type-substitution slots, otherwise ``"typing.Any"`` for stubgen.
 template <typename Field> inline const char *field_annotation_str() noexcept {
     using caster_t = ::nanobind::detail::make_caster<Field>;
     if constexpr (caster_t::Name.type_count() == 0) {
-        return caster_t::Name.text;
+        static constexpr auto sanitized = sanitize_annotation(caster_t::Name.text);
+        return sanitized.data;
     } else {
         return "typing.Any";
     }
+}
+
+// True when an annotation mentions ``typing.``; such strings only evaluate
+// under ``typing.get_type_hints()`` if the owning module can resolve ``typing``.
+constexpr bool annotation_references_typing(const char *s) noexcept {
+    for (; *s != '\0'; ++s) {
+        const char *p = s;
+        const char *q = "typing.";
+        while (*q != '\0' && *p == *q) {
+            ++p;
+            ++q;
+        }
+        if (*q == '\0')
+            return true;
+    }
+    return false;
 }
 
 // Child rv_policy: reference/automatic_reference downgrade to copy (move
@@ -444,12 +489,19 @@ template <typename T> inline void bind_namedtuple(::nanobind::module_ m) {
     ::nanobind::object defaults =
         detail::make_defaults_object(fields, std::make_index_sequence<N>{});
     ::nanobind::dict annotations;
+    bool needs_typing = false;
     auto add_annot = [&](const auto &f) {
         using field_value_type = typename std::remove_reference_t<decltype(f)>::value_type;
-        annotations[::nanobind::str(f.name)] =
-            ::nanobind::str(detail::field_annotation_str<field_value_type>());
+        const char *annot = detail::field_annotation_str<field_value_type>();
+        needs_typing = needs_typing || detail::annotation_references_typing(annot);
+        annotations[::nanobind::str(f.name)] = ::nanobind::str(annot);
     };
     detail::for_each_field(fields, add_annot, std::make_index_sequence<N>{});
+
+    // Make ``typing.``-prefixed annotations resolvable for get_type_hints(),
+    // mirroring the ``import typing`` a hand-written module would carry.
+    if (needs_typing && !::nanobind::hasattr(m, "typing"))
+        m.attr("typing") = ::nanobind::module_::import_("typing");
 
     // Delegate the type-independent tail to a non-template helper so each
     // bind_namedtuple<T> only carries the per-T publish-once CAS below.
@@ -478,7 +530,6 @@ template <typename T> inline void bind_namedtuple(::nanobind::module_ m) {
         static constexpr const char *class_name = ClassName;                                       \
         using fields_t = decltype(::nanobind::detail::tuple(__VA_ARGS__));                         \
         static fields_t fields() {                                                                 \
-            using _nbnt_current_type [[maybe_unused]] = Type;                                      \
             return ::nanobind::detail::tuple(__VA_ARGS__);                                         \
         }                                                                                          \
     };                                                                                             \
