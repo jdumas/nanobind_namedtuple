@@ -15,7 +15,7 @@ struct Color {
     float b;
 };
 
-NB_NAMED_TUPLE(Color, "Color", NB_NT_FIELD(r), NB_NT_FIELD(g), NB_NT_FIELD(b))
+NB_NAMED_TUPLE(Color, r, g, b)
 
 NB_MODULE(mymod, m) {
     nbnt::bind_namedtuple<Color>(m);
@@ -28,6 +28,47 @@ The `Color` values returned from C++ become instances of the class produced by
 `_asdict`, `_replace`, structural pattern matching, and pickle inherited for
 free. `Color` also accepts plain-tuple inputs of matching arity from Python.
 
+## Declaration macros
+
+Three declaration macros cover increasing levels of control:
+
+- `NB_NAMED_TUPLE(Type, fields...)` — the common case. Takes bare member
+  names; the Python class name is the stringified `Type`:
+
+  ```cpp
+  NB_NAMED_TUPLE(Color, r, g, b)   // Python class "Color"
+  NB_NAMED_TUPLE(Empty)            // empty field list is valid
+  ```
+
+- `NB_NAMED_TUPLE_AS(Type, "Name", fields...)` — same as above with an
+  explicit Python class name. Use it for qualified C++ types whose
+  stringification is not a valid Python identifier:
+
+  ```cpp
+  NB_NAMED_TUPLE_AS(geom::Point, "Point", x, y)
+  ```
+
+- `NB_NAMED_TUPLE_EX(Type, "Name", descriptors...)` — full descriptor form.
+  Each field is an explicit `nbnt::field<&Type::member>("member")`, which
+  supports `.default_(value)` and `.doc("...")` (chainable in either order);
+  `NB_NT_FIELD(member)` is shorthand for a plain descriptor:
+
+  ```cpp
+  NB_NAMED_TUPLE_EX(
+      Point, "Point",
+      NB_NT_FIELD(x),
+      nbnt::field<&Point::y>("y").default_(0).doc("Y coordinate."))
+  ```
+
+`NB_NAMED_TUPLE` and `NB_NAMED_TUPLE_AS` accept at most 16 bare field names —
+beyond that a `static_assert` points at `NB_NAMED_TUPLE_EX`, which has no cap.
+
+> **Breaking change:** `NB_NAMED_TUPLE` used to take a class-name string and
+> `NB_NT_FIELD(...)` wrappers. Replace
+> `NB_NAMED_TUPLE(Color, "Color", NB_NT_FIELD(r), ...)` with
+> `NB_NAMED_TUPLE(Color, r, ...)`, or use `NB_NAMED_TUPLE_AS` /
+> `NB_NAMED_TUPLE_EX` when an explicit name or field descriptors are needed.
+
 ## Nested records
 
 Fields whose types are themselves `NB_NAMED_TUPLE`-bound records nest
@@ -38,8 +79,8 @@ it in a field:
 struct Vec3 { float x, y, z; };
 struct Pixel { Vec3 position; Color color; };
 
-NB_NAMED_TUPLE(Vec3,  "Vec3",  NB_NT_FIELD(x), NB_NT_FIELD(y), NB_NT_FIELD(z))
-NB_NAMED_TUPLE(Pixel, "Pixel", NB_NT_FIELD(position), NB_NT_FIELD(color))
+NB_NAMED_TUPLE(Vec3, x, y, z)
+NB_NAMED_TUPLE(Pixel, position, color)
 
 NB_MODULE(mymod, m) {
     nbnt::bind_namedtuple<Vec3>(m);

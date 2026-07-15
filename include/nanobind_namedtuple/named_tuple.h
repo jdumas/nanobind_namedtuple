@@ -1,18 +1,7 @@
 #pragma once
 
-// Public header for nanobind_namedtuple.
-//
-// This header provides:
-//   * ``nbnt::field<&T::member>("name")`` — compile-time descriptor for a
-//     single field of a C++ record, with an optional ``.default_(value)``.
-//   * ``NB_NT_FIELD(name)`` / ``NB_NAMED_TUPLE(Type, "Name", ...)`` /
-//     ``NB_NAMED_TUPLE_EX(Type, "Name", ...)`` — declaration macros that
-//     emit both a ``nbnt::detail::traits<Type>`` specialization and a
-//     ``nanobind::detail::type_caster<Type>`` specialization.
-//   * ``nbnt::bind_namedtuple<T>(m)`` — module-side call that builds the
-//     Python namedtuple class via ``collections.namedtuple()`` and
-//     publishes it to a per-``T`` slot with publish-exactly-once
-//     semantics (first-registration wins).
+// Public header for nanobind_namedtuple: NB_NAMED_TUPLE / _AS / _EX declaration
+// macros plus nbnt::bind_namedtuple<T>(m); see the README for usage.
 
 #include <nanobind/nanobind.h>
 
@@ -30,10 +19,8 @@ template <auto MemberPtr> using value_of_t = decltype(value_of_member_ptr(Member
 
 } // namespace detail
 
-// Compile-time field descriptor: stores the member pointer, name, and an
-// optional ``.doc(...)`` string; the HasDefault=true specialization also
-// holds the default_ value verbatim. ``.doc`` and ``.default_`` chain in
-// either order.
+// Compile-time field descriptor: member pointer, name, optional ``.doc(...)``;
+// the HasDefault=true specialization adds ``.default_``, chainable in either order.
 template <auto MemberPtr, bool HasDefault = false> struct field {
     using value_type = detail::value_of_t<MemberPtr>;
     static constexpr auto member_ptr = MemberPtr;
@@ -73,6 +60,15 @@ namespace detail {
 
 // Per-``T`` traits, specialized by ``NB_NAMED_TUPLE_EX``.
 template <typename T> struct traits;
+
+// Instantiated by NB_NT_FE_TOO_MANY when a declaration macro receives more than
+// 16 bare field names; the static_assert points at the NB_NAMED_TUPLE_EX escape hatch.
+template <bool AtMost16Fields = false> struct too_many_fields {
+    static_assert(
+        AtMost16Fields, "NB_NAMED_TUPLE/NB_NAMED_TUPLE_AS accept at most 16 bare field names; "
+                        "use NB_NAMED_TUPLE_EX with explicit nbnt::field<...> descriptors instead"
+    );
+};
 
 // Per-T class slot: plain PyObject* under the GIL and with std::atomic_ref
 // (publication is a CAS via atomic_ref); std::atomic<PyObject*> otherwise.
@@ -441,9 +437,8 @@ inline PyObject *nt_factory_cached() {
     return factory;
 }
 
-// Registration tail: factory + sentinels + optional class docstring set
-// pre-CAS (fully populated when observed); ``__annotations__`` is a copy
-// protecting ``__nb_nt_annotations__``. Strong ref.
+// Registration tail: factory + sentinels + optional class docstring, all set
+// pre-CAS; ``__annotations__`` is a copy protecting ``__nb_nt_annotations__``. Strong ref.
 NB_NOINLINE inline PyObject *nt_finalize_class(
     PyObject *m_ptr, const char *class_name, PyObject *names, PyObject *defaults,
     PyObject *annotations, const char *cls_doc
@@ -474,8 +469,7 @@ NB_NOINLINE inline PyObject *nt_finalize_class(
 }
 
 // Set ``__doc__`` on the property object backing one namedtuple field;
-// applied to the candidate class before publication so only the winning
-// registration's docstrings are observable.
+// applied pre-publication so only the winning registration's docs are observable.
 NB_NOINLINE inline void nt_set_field_doc(PyObject *cls, const char *name, const char *doc) {
     ::nanobind::object prop = ::nanobind::borrow(cls).attr(name);
     ::nanobind::str doc_obj(doc);
@@ -493,9 +487,8 @@ nt_attach_to_module(PyObject *m_ptr, const char *class_name, PyObject *cls) {
 
 } // namespace detail
 
-// Register the Python namedtuple class for ``T`` and attach it to ``m``.
-// Publish-exactly-once (first-registration wins) process-wide. ``cls_doc``,
-// when non-null, becomes the class ``__doc__``.
+// Register the Python namedtuple class for ``T`` (publish-exactly-once, first
+// registration wins) and attach it to ``m``; non-null ``cls_doc`` becomes ``__doc__``.
 template <typename T>
 inline void bind_namedtuple(::nanobind::module_ m, const char *cls_doc = nullptr) {
     using Traits = detail::traits<T>;
@@ -607,10 +600,79 @@ inline void bind_namedtuple(::nanobind::module_ m, const char *cls_doc = nullptr
     NAMESPACE_END(detail)                                                                          \
     NAMESPACE_END(NB_NAMESPACE)
 
-// NB_NAMED_TUPLE is the concise form: infers the member pointer and name
-// from each NB_NT_FIELD argument.
-#define NB_NAMED_TUPLE(Type, ClassName, ...) NB_NAMED_TUPLE_EX(Type, ClassName, __VA_ARGS__)
-
 // NB_NT_FIELD(member) expands to nbnt::field<&Type::member>("member"); valid
-// only inside NB_NAMED_TUPLE, where _nbnt_current_type aliases the record.
+// inside the declaration macros, where _nbnt_current_type aliases the record.
 #define NB_NT_FIELD(FieldName) ::nbnt::field<&_nbnt_current_type::FieldName>(#FieldName)
+
+// Extra rescan so MSVC's traditional preprocessor re-splits forwarded
+// __VA_ARGS__ into separate arguments before selection.
+#define NB_NT_EXPAND(x) x
+
+// NB_NT_FE<k>: expand k bare field names into NB_NT_FIELD descriptors.
+#define NB_NT_FE1(x) NB_NT_FIELD(x)
+#define NB_NT_FE2(x, ...) NB_NT_FIELD(x), NB_NT_EXPAND(NB_NT_FE1(__VA_ARGS__))
+#define NB_NT_FE3(x, ...) NB_NT_FIELD(x), NB_NT_EXPAND(NB_NT_FE2(__VA_ARGS__))
+#define NB_NT_FE4(x, ...) NB_NT_FIELD(x), NB_NT_EXPAND(NB_NT_FE3(__VA_ARGS__))
+#define NB_NT_FE5(x, ...) NB_NT_FIELD(x), NB_NT_EXPAND(NB_NT_FE4(__VA_ARGS__))
+#define NB_NT_FE6(x, ...) NB_NT_FIELD(x), NB_NT_EXPAND(NB_NT_FE5(__VA_ARGS__))
+#define NB_NT_FE7(x, ...) NB_NT_FIELD(x), NB_NT_EXPAND(NB_NT_FE6(__VA_ARGS__))
+#define NB_NT_FE8(x, ...) NB_NT_FIELD(x), NB_NT_EXPAND(NB_NT_FE7(__VA_ARGS__))
+#define NB_NT_FE9(x, ...) NB_NT_FIELD(x), NB_NT_EXPAND(NB_NT_FE8(__VA_ARGS__))
+#define NB_NT_FE10(x, ...) NB_NT_FIELD(x), NB_NT_EXPAND(NB_NT_FE9(__VA_ARGS__))
+#define NB_NT_FE11(x, ...) NB_NT_FIELD(x), NB_NT_EXPAND(NB_NT_FE10(__VA_ARGS__))
+#define NB_NT_FE12(x, ...) NB_NT_FIELD(x), NB_NT_EXPAND(NB_NT_FE11(__VA_ARGS__))
+#define NB_NT_FE13(x, ...) NB_NT_FIELD(x), NB_NT_EXPAND(NB_NT_FE12(__VA_ARGS__))
+#define NB_NT_FE14(x, ...) NB_NT_FIELD(x), NB_NT_EXPAND(NB_NT_FE13(__VA_ARGS__))
+#define NB_NT_FE15(x, ...) NB_NT_FIELD(x), NB_NT_EXPAND(NB_NT_FE14(__VA_ARGS__))
+#define NB_NT_FE16(x, ...) NB_NT_FIELD(x), NB_NT_EXPAND(NB_NT_FE15(__VA_ARGS__))
+#define NB_NT_FE_TOO_MANY(...)                                                                     \
+    ::nbnt::detail::too_many_fields<> {}
+
+// NB_NT_SEL yields its 26th argument; the dispatchers below append a table
+// of macro names so that argument selects the right expander for the arity.
+#define NB_NT_SEL(                                                                                 \
+    _1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, _15, _16, _17, _18, _19, _20,     \
+    _21, _22, _23, _24, _25, N, ...                                                                \
+)                                                                                                  \
+    N
+
+// clang-format off
+// 1..16 field names select NB_NT_FE<k>; 17..25 select NB_NT_FE_TOO_MANY,
+// whose static_assert reports the cap and the NB_NAMED_TUPLE_EX escape hatch.
+#define NB_NT_FIELDS(...)                                                                          \
+    NB_NT_EXPAND(NB_NT_SEL(                                                                        \
+        __VA_ARGS__, NB_NT_FE_TOO_MANY, NB_NT_FE_TOO_MANY, NB_NT_FE_TOO_MANY, NB_NT_FE_TOO_MANY,   \
+        NB_NT_FE_TOO_MANY, NB_NT_FE_TOO_MANY, NB_NT_FE_TOO_MANY, NB_NT_FE_TOO_MANY,                \
+        NB_NT_FE_TOO_MANY, NB_NT_FE16, NB_NT_FE15, NB_NT_FE14, NB_NT_FE13, NB_NT_FE12,             \
+        NB_NT_FE11, NB_NT_FE10, NB_NT_FE9, NB_NT_FE8, NB_NT_FE7, NB_NT_FE6, NB_NT_FE5, NB_NT_FE4,  \
+        NB_NT_FE3, NB_NT_FE2, NB_NT_FE1, 0                                                         \
+    )(__VA_ARGS__))
+
+// Fixed-arity bodies selected by NB_NAMED_TUPLE / NB_NAMED_TUPLE_AS below;
+// the _0 forms pass an empty descriptor list for field-less records.
+#define NB_NT_NT_0(Type) NB_NAMED_TUPLE_EX(Type, #Type, )
+#define NB_NT_NT_N(Type, ...) NB_NAMED_TUPLE_EX(Type, #Type, NB_NT_FIELDS(__VA_ARGS__))
+#define NB_NT_AS_0(Type, ClassName) NB_NAMED_TUPLE_EX(Type, ClassName, )
+#define NB_NT_AS_N(Type, ClassName, ...)                                                           \
+    NB_NAMED_TUPLE_EX(Type, ClassName, NB_NT_FIELDS(__VA_ARGS__))
+
+// NB_NAMED_TUPLE(Type, fields...): bare member names, Python class name #Type.
+// At most 16 fields; NB_NAMED_TUPLE_EX lifts the cap and adds .default_/.doc.
+#define NB_NAMED_TUPLE(...)                                                                        \
+    NB_NT_EXPAND(NB_NT_SEL(                                                                        \
+        __VA_ARGS__, NB_NT_NT_N, NB_NT_NT_N, NB_NT_NT_N, NB_NT_NT_N, NB_NT_NT_N, NB_NT_NT_N,       \
+        NB_NT_NT_N, NB_NT_NT_N, NB_NT_NT_N, NB_NT_NT_N, NB_NT_NT_N, NB_NT_NT_N, NB_NT_NT_N,        \
+        NB_NT_NT_N, NB_NT_NT_N, NB_NT_NT_N, NB_NT_NT_N, NB_NT_NT_N, NB_NT_NT_N, NB_NT_NT_N,        \
+        NB_NT_NT_N, NB_NT_NT_N, NB_NT_NT_N, NB_NT_NT_N, NB_NT_NT_0, 0                              \
+    )(__VA_ARGS__))
+
+// NB_NAMED_TUPLE_AS(Type, "ClassName", fields...): explicit Python class name,
+// for qualified C++ types (e.g. geom::Point) whose #Type is not an identifier.
+#define NB_NAMED_TUPLE_AS(...)                                                                     \
+    NB_NT_EXPAND(NB_NT_SEL(                                                                        \
+        __VA_ARGS__, NB_NT_AS_N, NB_NT_AS_N, NB_NT_AS_N, NB_NT_AS_N, NB_NT_AS_N, NB_NT_AS_N,       \
+        NB_NT_AS_N, NB_NT_AS_N, NB_NT_AS_N, NB_NT_AS_N, NB_NT_AS_N, NB_NT_AS_N, NB_NT_AS_N,        \
+        NB_NT_AS_N, NB_NT_AS_N, NB_NT_AS_N, NB_NT_AS_N, NB_NT_AS_N, NB_NT_AS_N, NB_NT_AS_N,        \
+        NB_NT_AS_N, NB_NT_AS_N, NB_NT_AS_N, NB_NT_AS_0, NB_NT_AS_N, 0                              \
+    )(__VA_ARGS__))
+// clang-format on
