@@ -1,27 +1,33 @@
-"""Verify the ``__nb_named_tuple__`` sentinel and the ``NamedTupleStubGen`` hook.
+"""Verify the ``__nb_named_tuple__`` sentinel and the pattern-file generator.
 
 Covers:
 
 * the sentinel attribute and per-field annotation metadata attached by
   ``nbnt::bind_namedtuple<T>``;
-* ``NamedTupleStubGen`` overriding nanobind's default ``class X(tuple): ...``
-  emission with canonical ``class X(typing.NamedTuple):`` blocks that include
+* pattern-file entries replacing nanobind's default ``class X(tuple): ...``
+  emission with canonical ``class X(NamedTuple):`` blocks that include
   annotations and trailing defaults;
-* class and per-field docstrings set at bind time surfacing in the stub while
-  synthetic ``collections.namedtuple`` docstrings stay suppressed;
-* the fallback to nanobind's default emitter for classes without the sentinel.
+* class and per-field docstrings set at bind time surfacing in the replacement
+  block while synthetic ``collections.namedtuple`` docstrings stay suppressed;
+* an end-to-end run of vanilla ``python -m nanobind.stubgen`` consuming the
+  generated pattern file.
 """
 
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 import typing
 
 import pytest
-from nanobind.stubgen import StubGen
 from nanobind_namedtuple_examples import nbnt_example_hello
-from nanobind_namedtuple_stubgen import NamedTupleStubGen, is_namedtuple_class
+from nanobind_namedtuple_stubgen import (
+    find_namedtuple_classes,
+    generate_pattern_file,
+    is_namedtuple_class,
+    pattern_entry,
+)
 
 NT_CLASSES = ("Color", "Point", "Empty", "Vec3", "Payload", "Pixel", "Tagged", "Polyline")
 
@@ -103,114 +109,99 @@ def test_annotations_and_sentinel_are_distinct_dict_objects():
         color.__annotations__["r"] = "float"
 
 
-def _generate_stub(cls, *, hook, include_docstrings=False):
-    gen = hook(module=nbnt_example_hello, include_docstrings=include_docstrings)
-    gen.put(cls, name=cls.__name__, parent=nbnt_example_hello)
-    return gen.get()
+MODULE_NAME = "nanobind_namedtuple_examples.nbnt_example_hello"
 
 
-def test_hook_emits_typing_namedtuple_block_for_color():
-    stub = _generate_stub(nbnt_example_hello.Color, hook=NamedTupleStubGen)
-    assert re.search(r"class Color\((?:typing\.)?NamedTuple\):", stub)
-    assert "r: float" in stub
-    assert "g: float" in stub
-    assert "b: float" in stub
+def test_find_namedtuple_classes_returns_registered_classes_in_order():
+    classes = find_namedtuple_classes(nbnt_example_hello)
+    assert [cls.__name__ for cls in classes] == list(NT_CLASSES)
 
 
-def test_hook_emits_defaults_from_field_defaults():
-    stub = _generate_stub(nbnt_example_hello.Point, hook=NamedTupleStubGen)
-    assert re.search(r"class Point\((?:typing\.)?NamedTuple\):", stub)
-    assert "x: int" in stub
-    assert "y: int" in stub
-    assert re.search(r"label: str = ['\"]{2}", stub)
+def test_find_namedtuple_classes_skips_aliases_and_foreign_modules():
+    import types
+
+    fake = types.ModuleType("fake_mod")
+    fake.Renamed = nbnt_example_hello.Color  # alias under a different name
+    fake.Color = nbnt_example_hello.Color  # right name, wrong __module__
+    assert find_namedtuple_classes(fake) == []
 
 
-def test_hook_emits_clean_annotations_for_stl_caster_fields():
-    stub = _generate_stub(nbnt_example_hello.Polyline, hook=NamedTupleStubGen)
-    assert re.search(r"class Polyline\((?:typing\.)?NamedTuple\):", stub)
-    assert "points: list[tuple[int, int]]" in stub
+def test_pattern_entry_query_is_anchored_escaped_qualified_name():
+    entry = pattern_entry(nbnt_example_hello.Color)
+    query = entry.splitlines()[0]
+    assert query == rf"^{re.escape(MODULE_NAME)}\.Color$:"
+
+
+def test_pattern_entry_emits_namedtuple_block_for_color():
+    entry = pattern_entry(nbnt_example_hello.Color)
+    assert "\\from typing import NamedTuple" in entry
+    assert "class Color(NamedTuple):" in entry
+    assert "r: float" in entry
+    assert "g: float" in entry
+    assert "b: float" in entry
+
+
+def test_pattern_entry_emits_defaults_from_field_defaults():
+    entry = pattern_entry(nbnt_example_hello.Point)
+    assert "class Point(NamedTuple):" in entry
+    assert "x: int" in entry
+    assert "y: int" in entry
+    assert re.search(r"label: str = ['\"]{2}", entry)
+
+
+def test_pattern_entry_emits_clean_annotations_for_stl_caster_fields():
+    entry = pattern_entry(nbnt_example_hello.Polyline)
+    assert "class Polyline(NamedTuple):" in entry
+    assert "points: list[tuple[int, int]]" in entry
     if sys.version_info >= (3, 10):
-        assert "width: float | None" in stub
+        assert "width: float | None" in entry
     else:
-        assert "width: Optional[float]" in stub
-    assert "@" not in stub
-    # Import lines must name plain symbols, never subscripted expressions.
-    import_lines = [ln for ln in stub.splitlines() if ln.startswith(("import ", "from "))]
-    assert all("[" not in ln for ln in import_lines), import_lines
+        # Annotation strings are emitted verbatim; the referenced module is
+        # registered through an ``\import`` escape line.
+        assert "width: typing.Optional[float]" in entry
+        assert "\\import typing" in entry
+    assert "@" not in entry
 
 
-def test_hook_emits_class_docstring_for_documented_class():
-    stub = _generate_stub(nbnt_example_hello.Point, hook=NamedTupleStubGen, include_docstrings=True)
-    assert '"""A 2D point with an optional display label."""' in stub
+def test_pattern_entry_emits_class_docstring_for_documented_class():
+    entry = pattern_entry(nbnt_example_hello.Point)
+    assert '"""A 2D point with an optional display label."""' in entry
 
 
-def test_hook_emits_field_docstring_under_documented_field():
-    stub = _generate_stub(nbnt_example_hello.Point, hook=NamedTupleStubGen, include_docstrings=True)
-    assert re.search(r'x: int\n\s+"""X coordinate\."""', stub)
-    assert re.search(r"y: int\n\s+label:", stub)
+def test_pattern_entry_emits_field_docstring_under_documented_field():
+    entry = pattern_entry(nbnt_example_hello.Point)
+    assert re.search(r'x: int\n\s+"""X coordinate\."""', entry)
+    assert re.search(r"y: int\n\s+label:", entry)
 
 
-def test_hook_emits_field_docstring_after_default_value():
-    stub = _generate_stub(nbnt_example_hello.Point, hook=NamedTupleStubGen, include_docstrings=True)
-    assert re.search(r"label: str = ['\"]{2}\n\s+\"\"\"Display label\.\"\"\"", stub)
+def test_pattern_entry_emits_field_docstring_after_default_value():
+    entry = pattern_entry(nbnt_example_hello.Point)
+    assert re.search(r"label: str = ['\"]{2}\n\s+\"\"\"Display label\.\"\"\"", entry)
 
-    tagged = _generate_stub(
-        nbnt_example_hello.Tagged, hook=NamedTupleStubGen, include_docstrings=True
-    )
+    tagged = pattern_entry(nbnt_example_hello.Tagged)
     assert re.search(r'tag: .+ = None\n\s+"""Optional integer tag\."""', tagged)
 
 
-def test_hook_emits_no_synthetic_docstrings_for_undocumented_class():
-    with_docs = _generate_stub(
-        nbnt_example_hello.Color, hook=NamedTupleStubGen, include_docstrings=True
-    )
-    without_docs = _generate_stub(nbnt_example_hello.Color, hook=NamedTupleStubGen)
-    assert (
-        with_docs[with_docs.index("class Color") :]
-        == without_docs[without_docs.index("class Color") :]
-    )
-    assert "Color(r, g, b)" not in with_docs
-    assert "Alias for field number" not in with_docs
+def test_pattern_entry_emits_no_synthetic_docstrings_for_undocumented_class():
+    entry = pattern_entry(nbnt_example_hello.Color)
+    assert "Color(r, g, b)" not in entry
+    assert "Alias for field number" not in entry
+    assert '"""' not in entry
 
 
-def test_hook_omits_docstrings_when_disabled():
-    stub = _generate_stub(nbnt_example_hello.Point, hook=NamedTupleStubGen)
-    assert '"""' not in stub
+def test_pattern_entry_emits_pass_for_zero_field_record():
+    entry = pattern_entry(nbnt_example_hello.Empty)
+    assert "class Empty(NamedTuple):" in entry
+    assert re.search(r"class Empty\(NamedTuple\):\s+pass", entry)
 
 
-def test_hook_emits_pass_for_zero_field_record():
-    stub = _generate_stub(nbnt_example_hello.Empty, hook=NamedTupleStubGen)
-    assert re.search(r"class Empty\((?:typing\.)?NamedTuple\):", stub)
-    assert re.search(r"class Empty\(.*\):\s+pass", stub)
-
-
-def test_hook_overrides_default_tuple_emission():
-    default_stub = _generate_stub(nbnt_example_hello.Color, hook=StubGen)
-    assert "class Color(tuple):" in default_stub
-    assert "NamedTuple" not in default_stub
-
-    hooked_stub = _generate_stub(nbnt_example_hello.Color, hook=NamedTupleStubGen)
-    assert "class Color(tuple):" not in hooked_stub
-    assert "NamedTuple" in hooked_stub
-
-
-def test_hook_leaves_non_namedtuple_classes_to_default_emitter():
-    class Plain:
-        pass
-
-    plain_stub_default = _generate_stub(Plain, hook=StubGen)
-    plain_stub_hook = _generate_stub(Plain, hook=NamedTupleStubGen)
-    assert plain_stub_default == plain_stub_hook
-
-
-def test_full_module_stub_contains_every_namedtuple_class():
-    gen = NamedTupleStubGen(module=nbnt_example_hello, include_docstrings=False)
-    gen.put(nbnt_example_hello)
-    stub = gen.get()
+def test_generate_pattern_file_covers_every_namedtuple_class():
+    text = generate_pattern_file(nbnt_example_hello)
     for cls_name in NT_CLASSES:
         assert re.search(
-            rf"class {cls_name}\((?:typing\.)?NamedTuple\):", stub
-        ), f"missing typing.NamedTuple block for {cls_name}"
+            rf"class {cls_name}\(NamedTuple\):", text
+        ), f"missing NamedTuple block for {cls_name}"
+    assert text.count("$:") == len(NT_CLASSES)
 
 
 def test_is_namedtuple_class_rejects_unrelated_types():
@@ -222,3 +213,65 @@ def test_is_namedtuple_class_rejects_unrelated_types():
 
     Plain = namedtuple("Plain", ["x", "y"])
     assert not is_namedtuple_class(Plain)
+
+
+@pytest.fixture(scope="module")
+def generated_stub(tmp_path_factory):
+    """Pattern file + vanilla ``nanobind.stubgen`` run against the extension."""
+    tmp_path = tmp_path_factory.mktemp("stubgen")
+    pattern_file = tmp_path / "hello.pat"
+    stub_file = tmp_path / "hello.pyi"
+
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nanobind_namedtuple_stubgen",
+            "-m",
+            MODULE_NAME,
+            "-o",
+            str(pattern_file),
+        ],
+        check=True,
+    )
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nanobind.stubgen",
+            "-m",
+            MODULE_NAME,
+            "-p",
+            str(pattern_file),
+            "-o",
+            str(stub_file),
+            "-q",
+        ],
+        check=True,
+    )
+    return stub_file.read_text(encoding="utf-8")
+
+
+def test_end_to_end_stub_contains_namedtuple_blocks(generated_stub):
+    assert "from typing import NamedTuple" in generated_stub
+    for cls_name in NT_CLASSES:
+        assert re.search(
+            rf"class {cls_name}\(NamedTuple\):", generated_stub
+        ), f"missing NamedTuple block for {cls_name}"
+
+
+def test_end_to_end_stub_has_no_tuple_rendering(generated_stub):
+    assert "(tuple)" not in generated_stub
+    assert "_tuplegetter" not in generated_stub
+    assert "Alias for field number" not in generated_stub
+
+
+def test_end_to_end_stub_preserves_docstrings_and_defaults(generated_stub):
+    assert '"""A 2D point with an optional display label."""' in generated_stub
+    assert re.search(r"label: str = ['\"]{2}", generated_stub)
+    assert '"""X coordinate."""' in generated_stub
+
+
+def test_end_to_end_stub_keeps_function_signatures_typed(generated_stub):
+    assert re.search(r"def make_color\(.*\) -> Color:", generated_stub)
+    assert re.search(r"def sum_vec3\(arg: Vec3, /\) -> float:", generated_stub)

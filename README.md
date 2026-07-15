@@ -164,6 +164,43 @@ and `find_package(nanobind CONFIG REQUIRED)`. The example extension is
 guarded by `NBNT_BUILD_EXAMPLES` (default `OFF`), so consuming projects do
 not build it.
 
+## Stub generation
+
+By default, `python -m nanobind.stubgen` renders registered namedtuples as
+`class X(tuple): ...` blocks. The companion package in
+`stubgen/nanobind_namedtuple_stubgen` generates a nanobind *pattern file*
+that replaces those blocks with canonical `typing.NamedTuple` definitions —
+field annotations, defaults, and bind-time docstrings included. Vanilla
+nanobind stubgen remains the sole stub emitter; the pattern file is the only
+customization:
+
+```sh
+python -m nanobind_namedtuple_stubgen -m my_ext -o my_ext.pat
+python -m nanobind.stubgen -m my_ext -p my_ext.pat -o my_ext.pyi
+```
+
+In CMake, generate the pattern file after building the extension and pass it
+to the standard `nanobind_add_stub()`:
+
+```cmake
+add_custom_command(
+    OUTPUT my_ext.pat
+    COMMAND Python::Interpreter -m nanobind_namedtuple_stubgen
+            -i $<TARGET_FILE_DIR:my_ext> -m my_ext -o my_ext.pat
+    DEPENDS my_ext)
+add_custom_target(my_ext_pattern DEPENDS my_ext.pat)
+
+nanobind_add_stub(
+    my_ext_stub
+    MODULE my_ext
+    OUTPUT my_ext.pyi
+    PATTERN_FILE my_ext.pat
+    PYTHON_PATH $<TARGET_FILE_DIR:my_ext>
+    DEPENDS my_ext my_ext_pattern)
+```
+
+See [stubgen/README.md](stubgen/README.md) for details.
+
 ## Internals
 
 See [docs/design.md](docs/design.md) for a walkthrough of the internal design.
