@@ -437,8 +437,9 @@ inline PyObject *nt_factory_cached() {
     return factory;
 }
 
-// Registration tail: factory + sentinels + optional class docstring, all set
-// pre-CAS; ``__annotations__`` is a copy protecting ``__nb_nt_annotations__``. Strong ref.
+// Registration tail: factory + sentinels + optional class docstring, all set pre-CAS;
+// class and ``__new__`` ``__annotations__`` are copies protecting ``__nb_nt_annotations__``. Strong
+// ref.
 NB_NOINLINE inline PyObject *nt_finalize_class(
     PyObject *m_ptr, const char *class_name, PyObject *names, PyObject *defaults,
     PyObject *annotations, const char *cls_doc
@@ -458,6 +459,15 @@ NB_NOINLINE inline PyObject *nt_finalize_class(
     if (PyObject_SetAttrString(cls_obj.ptr(), "__nb_nt_annotations__", annotations) < 0)
         throw ::nanobind::python_error();
     if (PyObject_SetAttrString(cls_obj.ptr(), "__annotations__", annotations_public.ptr()) < 0)
+        throw ::nanobind::python_error();
+    // Mirror onto ``__new__`` like typing._make_nmtuple, with its own copy so
+    // runtime introspection (inspect.getfullargspec) sees constructor types.
+    PyObject *annotations_new = PyDict_Copy(annotations);
+    if (annotations_new == nullptr)
+        throw ::nanobind::python_error();
+    ::nanobind::object annotations_on_new = ::nanobind::steal(annotations_new);
+    ::nanobind::object new_fn = cls_obj.attr("__new__");
+    if (PyObject_SetAttrString(new_fn.ptr(), "__annotations__", annotations_on_new.ptr()) < 0)
         throw ::nanobind::python_error();
     if (cls_doc != nullptr) {
         ::nanobind::str doc_obj(cls_doc);

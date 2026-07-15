@@ -15,6 +15,7 @@ Covers:
 
 from __future__ import annotations
 
+import inspect
 import re
 import subprocess
 import sys
@@ -107,6 +108,19 @@ def test_annotations_and_sentinel_are_distinct_dict_objects():
     finally:
         color.__annotations__.pop("injected", None)
         color.__annotations__["r"] = "float"
+
+
+@pytest.mark.parametrize("cls_name", NT_CLASSES)
+def test_new_annotations_mirror_class_annotations(cls_name):
+    cls = getattr(nbnt_example_hello, cls_name)
+    assert cls.__new__.__annotations__ == cls.__annotations__
+    assert cls.__new__.__annotations__ is not cls.__annotations__
+    assert cls.__new__.__annotations__ is not cls.__nb_nt_annotations__
+
+
+def test_getfullargspec_exposes_constructor_annotations():
+    spec = inspect.getfullargspec(nbnt_example_hello.Color)
+    assert spec.annotations == {"r": "float", "g": "float", "b": "float"}
 
 
 MODULE_NAME = "nanobind_namedtuple_examples.nbnt_example_hello"
