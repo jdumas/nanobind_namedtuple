@@ -30,6 +30,9 @@ if(NOT COMMAND nanobind_add_module
     find_package(nanobind CONFIG REQUIRED)
 endif()
 
+# CMake helper generating stubgen pattern files for consumers.
+include(cmake/nanobind_namedtuple.cmake)
+
 # Header-only public interface.
 add_library(nanobind_namedtuple INTERFACE)
 add_library(nanobind_namedtuple::nanobind_namedtuple ALIAS nanobind_namedtuple)

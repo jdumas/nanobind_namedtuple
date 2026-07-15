@@ -3,8 +3,9 @@
 This document explains how `nanobind_namedtuple` is put together and why it is
 built the way it is. It assumes familiarity with nanobind's type-caster
 machinery. Everything described here lives in
-`include/nanobind_namedtuple/named_tuple.h` and
-`stubgen/nanobind_namedtuple_stubgen/`.
+`include/nanobind_namedtuple/named_tuple.h`,
+`stubgen/nanobind_namedtuple_stubgen/`, and
+`cmake/nanobind_namedtuple.cmake`.
 
 ## Goals and constraints
 
@@ -181,6 +182,26 @@ The `__main__` entry point takes `-m MODULE` (repeatable), `-i` import-path
 entries, `-r` for submodule recursion, and `-o` for the output pattern file —
 mirroring the corresponding `nanobind.stubgen` options so the two commands
 can share arguments in build scripts.
+
+For CMake consumers, `cmake/nanobind_namedtuple.cmake` (included by the
+top-level `CMakeLists.txt`, so the function exists after any integration
+route) defines `nanobind_namedtuple_stub_pattern()`. It assembles the command
+line above — resolving the generator package's location from the module's own
+file at include time (`CMAKE_CURRENT_LIST_DIR` captured into an internal cache
+variable, keeping the project's CMake 3.15 floor) and prepending it to any
+ambient `PYTHONPATH`, so consumers never configure import paths for the
+generator — and registers it
+either as an `add_custom_command`/target pair (build time) or as an
+`install(CODE)` rule with `COMMAND_ERROR_IS_FATAL ANY` (install time, for
+scikit-build-core layouts). Argument names deliberately mirror
+`nanobind_add_stub()`. The helper never wraps or calls `nanobind_add_stub()`:
+consumers keep calling the official function and pass the generated file as
+`PATTERN_FILE`. Ordering falls out of existing CMake semantics — the
+build-time custom command is a file-level dependency of the stub rule, and
+install rules run in declaration order, so an `INSTALL_TIME` helper call
+declared before the `INSTALL_TIME` stub call runs first. Because entries are
+anchored, fully-qualified queries applied first-match-wins, pattern files
+from several producers concatenate safely.
 
 ## Macro layer
 
