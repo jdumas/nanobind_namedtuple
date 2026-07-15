@@ -118,10 +118,13 @@ CPMAddPackage(
 target_link_libraries(my_ext PRIVATE nanobind_namedtuple::nanobind_namedtuple)
 ```
 
-Both routes execute the top-level `CMakeLists.txt`, which runs its own
+Both routes execute the top-level `CMakeLists.txt`, which reuses Python and
+nanobind from the parent project when they are already available: Python
+discovery is skipped when the `Python::Module` target exists, and nanobind
+discovery (including the `python -m nanobind --cmake_dir` probe) is skipped
+when `nanobind_add_module` is already defined, a `nanobind`/`nanobind-static`
+target exists, or `nanobind_FOUND` is set. Otherwise it runs its own
 `find_package(Python 3.9 COMPONENTS Interpreter Development.Module REQUIRED)`
-and `find_package(nanobind CONFIG REQUIRED)`. If the parent project already
-called `find_package(Python ...)` with a compatible component set, CMake
-reuses the cached result. The example extension is guarded by
-`NBNT_BUILD_EXAMPLES` (default `OFF`), so consuming projects do not build
-it.
+and `find_package(nanobind CONFIG REQUIRED)`. The example extension is
+guarded by `NBNT_BUILD_EXAMPLES` (default `OFF`), so consuming projects do
+not build it.
