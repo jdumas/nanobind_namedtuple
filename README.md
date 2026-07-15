@@ -1,6 +1,7 @@
 # nanobind_namedtuple
 
 `namedtuple` support for [nanobind](https://github.com/wjakob/nanobind).
+See [docs/design.md](docs/design.md) for a walkthrough of the internal design.
 
 ## Quick start
 
