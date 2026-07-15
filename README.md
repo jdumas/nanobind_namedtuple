@@ -1,7 +1,6 @@
 # nanobind_namedtuple
 
 `namedtuple` support for [nanobind](https://github.com/wjakob/nanobind).
-See [docs/design.md](docs/design.md) for a walkthrough of the internal design.
 
 ## Quick start
 
@@ -164,3 +163,7 @@ target exists, or `nanobind_FOUND` is set. Otherwise it runs its own
 and `find_package(nanobind CONFIG REQUIRED)`. The example extension is
 guarded by `NBNT_BUILD_EXAMPLES` (default `OFF`), so consuming projects do
 not build it.
+
+## Internals
+
+See [docs/design.md](docs/design.md) for a walkthrough of the internal design.
