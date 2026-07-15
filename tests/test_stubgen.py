@@ -156,7 +156,10 @@ def test_pattern_entry_emits_clean_annotations_for_stl_caster_fields():
     if sys.version_info >= (3, 10):
         assert "width: float | None" in entry
     else:
-        assert "width: Optional[float]" in entry
+        # Annotation strings are emitted verbatim; the referenced module is
+        # registered through an ``\import`` escape line.
+        assert "width: typing.Optional[float]" in entry
+        assert "\\import typing" in entry
     assert "@" not in entry
 
 
