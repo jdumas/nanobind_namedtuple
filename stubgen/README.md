@@ -52,16 +52,17 @@ output pattern file.
 
 ## CMake use
 
-Generate the pattern file after building the extension and hand it to the
-standard ``nanobind_add_stub()``:
+The package defines ``nanobind_namedtuple_stub_pattern()`` (available after
+``add_subdirectory``/FetchContent/CPM), which wraps the command line above
+and locates this generator package itself — no ``PYTHONPATH`` setup. Hand
+the generated file to the standard ``nanobind_add_stub()``:
 
 ```cmake
-add_custom_command(
+nanobind_namedtuple_stub_pattern(
     OUTPUT my_ext.pat
-    COMMAND Python::Interpreter -m nanobind_namedtuple_stubgen
-            -i $<TARGET_FILE_DIR:my_ext> -m my_ext -o my_ext.pat
+    MODULE my_ext
+    PYTHON_PATH $<TARGET_FILE_DIR:my_ext>
     DEPENDS my_ext)
-add_custom_target(my_ext_pattern DEPENDS my_ext.pat)
 
 nanobind_add_stub(
     my_ext_stub
@@ -69,8 +70,13 @@ nanobind_add_stub(
     OUTPUT my_ext.pyi
     PATTERN_FILE my_ext.pat
     PYTHON_PATH $<TARGET_FILE_DIR:my_ext>
-    DEPENDS my_ext my_ext_pattern)
+    DEPENDS my_ext)
 ```
+
+Argument names mirror ``nanobind_add_stub()``, including ``RECURSIVE`` and
+``INSTALL_TIME`` (with ``COMPONENT``/``EXCLUDE_FROM_ALL``); an
+``INSTALL_TIME`` call must be declared before the matching ``INSTALL_TIME``
+``nanobind_add_stub()`` so its install rule runs first.
 
 ## Programmatic use
 

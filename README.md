@@ -179,16 +179,18 @@ python -m nanobind_namedtuple_stubgen -m my_ext -o my_ext.pat
 python -m nanobind.stubgen -m my_ext -p my_ext.pat -o my_ext.pyi
 ```
 
-In CMake, generate the pattern file after building the extension and pass it
-to the standard `nanobind_add_stub()`:
+In CMake, the recommended route is `nanobind_namedtuple_stub_pattern()` —
+defined by this package's top-level `CMakeLists.txt`, so it is available
+after any of the integration routes above. It generates the pattern file
+(locating the generator package itself, no `PYTHONPATH` setup needed) and
+you pass that file to the standard `nanobind_add_stub()`:
 
 ```cmake
-add_custom_command(
+nanobind_namedtuple_stub_pattern(
     OUTPUT my_ext.pat
-    COMMAND Python::Interpreter -m nanobind_namedtuple_stubgen
-            -i $<TARGET_FILE_DIR:my_ext> -m my_ext -o my_ext.pat
+    MODULE my_ext
+    PYTHON_PATH $<TARGET_FILE_DIR:my_ext>
     DEPENDS my_ext)
-add_custom_target(my_ext_pattern DEPENDS my_ext.pat)
 
 nanobind_add_stub(
     my_ext_stub
@@ -196,8 +198,22 @@ nanobind_add_stub(
     OUTPUT my_ext.pyi
     PATTERN_FILE my_ext.pat
     PYTHON_PATH $<TARGET_FILE_DIR:my_ext>
-    DEPENDS my_ext my_ext_pattern)
+    DEPENDS my_ext)
 ```
+
+The helper only writes the pattern file; `nanobind_add_stub()` remains the
+sole stub emitter and is called by the consumer, untouched. Argument names
+mirror `nanobind_add_stub()`: `MODULE` is repeatable, `PYTHON_PATH` entries
+become import-path flags, `RECURSIVE` scans submodules, and `INSTALL_TIME`
+(with optional `COMPONENT`/`EXCLUDE_FROM_ALL`) switches to an `install(CODE)`
+rule for scikit-build-core layouts — declare it before the matching
+`INSTALL_TIME` `nanobind_add_stub()` so the pattern file exists when the stub
+is generated (install rules run in declaration order).
+
+Pattern files compose: each entry is an anchored regex on a fully-qualified
+class name and nanobind applies the first matching entry, so concatenating
+generated and hand-written pattern files (or files from several producers)
+is safe.
 
 See [stubgen/README.md](stubgen/README.md) for details.
 
