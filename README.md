@@ -74,3 +74,66 @@ and `rv_policy::automatic_reference` are downgraded to `copy`, or to `move`
 for rvalue sources, because the resulting tuple cannot reference the parent
 object. `rv_policy::reference_internal` and `rv_policy::take_ownership`
 raise `TypeError` at cast time.
+
+## CMake integration
+
+The library is header-only. Consumers link the imported target
+`nanobind_namedtuple::nanobind_namedtuple`, which propagates the include
+directory and `cxx_std_17`.
+
+### Prerequisites
+
+- CMake ≥ 3.15 and a C++17 compiler.
+- Python ≥ 3.9 with `nanobind` installed in the interpreter CMake picks up
+  (`pip install nanobind`). The top-level `CMakeLists.txt` locates
+  nanobind's CMake package by running `python -m nanobind --cmake_dir` on
+  `Python_EXECUTABLE`, so no extra `CMAKE_PREFIX_PATH` entry is needed.
+  Pass `-DPython_EXECUTABLE=/path/to/python` at configure time to select a
+  specific interpreter.
+
+### FetchContent
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(
+    nanobind_namedtuple
+    GIT_REPOSITORY https://github.com/jdumas/nanobind_namedtuple.git
+    GIT_TAG        main)
+FetchContent_MakeAvailable(nanobind_namedtuple)
+
+nanobind_add_module(my_ext STABLE_ABI my_ext.cpp)
+target_link_libraries(my_ext PRIVATE nanobind_namedtuple::nanobind_namedtuple)
+```
+
+Pin `GIT_TAG` to a commit hash or release tag for reproducible builds.
+
+### CPM.cmake
+
+```cmake
+CPMAddPackage(
+    NAME             nanobind_namedtuple
+    GITHUB_REPOSITORY jdumas/nanobind_namedtuple
+    GIT_TAG          main)
+
+target_link_libraries(my_ext PRIVATE nanobind_namedtuple::nanobind_namedtuple)
+```
+
+### Git submodule + `add_subdirectory`
+
+```
+git submodule add https://github.com/jdumas/nanobind_namedtuple.git \
+    third_party/nanobind_namedtuple
+```
+
+```cmake
+add_subdirectory(third_party/nanobind_namedtuple)
+target_link_libraries(my_ext PRIVATE nanobind_namedtuple::nanobind_namedtuple)
+```
+
+All three routes execute the top-level `CMakeLists.txt`, which runs its own
+`find_package(Python 3.9 COMPONENTS Interpreter Development.Module REQUIRED)`
+and `find_package(nanobind CONFIG REQUIRED)`. If the parent project already
+called `find_package(Python ...)` with a compatible component set, CMake
+reuses the cached result. The example extension is guarded by
+`NBNT_BUILD_EXAMPLES` (default `OFF`), so consuming projects do not build
+it.
