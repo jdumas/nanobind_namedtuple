@@ -118,19 +118,7 @@ CPMAddPackage(
 target_link_libraries(my_ext PRIVATE nanobind_namedtuple::nanobind_namedtuple)
 ```
 
-### Git submodule + `add_subdirectory`
-
-```
-git submodule add https://github.com/jdumas/nanobind_namedtuple.git \
-    third_party/nanobind_namedtuple
-```
-
-```cmake
-add_subdirectory(third_party/nanobind_namedtuple)
-target_link_libraries(my_ext PRIVATE nanobind_namedtuple::nanobind_namedtuple)
-```
-
-All three routes execute the top-level `CMakeLists.txt`, which runs its own
+Both routes execute the top-level `CMakeLists.txt`, which runs its own
 `find_package(Python 3.9 COMPONENTS Interpreter Development.Module REQUIRED)`
 and `find_package(nanobind CONFIG REQUIRED)`. If the parent project already
 called `find_package(Python ...)` with a compatible component set, CMake
