@@ -122,6 +122,32 @@ def test_payload_round_trip_preserves_object_identity():
     assert nbnt_example_hello.payload_obj(value) is marker
 
 
+def test_class_docstring_set_from_bind_namedtuple():
+    assert nbnt_example_hello.Point.__doc__ == "A 2D point with an optional display label."
+
+
+def test_field_docstrings_set_on_properties():
+    point = nbnt_example_hello.Point
+    assert point.x.__doc__ == "X coordinate."
+    assert point.label.__doc__ == "Display label."
+
+
+def test_doc_chained_with_default_in_either_order():
+    # Point.label uses .default_(...).doc(...); Tagged.tag uses .doc(...).default_(...).
+    assert nbnt_example_hello.Point.label.__doc__ == "Display label."
+    assert nbnt_example_hello.Point._field_defaults == {"label": ""}
+    assert nbnt_example_hello.Tagged.tag.__doc__ == "Optional integer tag."
+    assert nbnt_example_hello.Tagged._field_defaults == {"tag": None}
+
+
+def test_undocumented_class_and_fields_keep_namedtuple_defaults():
+    color = nbnt_example_hello.Color
+    assert color.__doc__ == "Color(r, g, b)"
+    assert color.r.__doc__ == "Alias for field number 0"
+    point = nbnt_example_hello.Point
+    assert point.y.__doc__ == "Alias for field number 1"
+
+
 @pytest.mark.skipif(
     sys.implementation.name == "pypy",
     reason="PyPy cpyext does not collect cycles through C-extension objects",

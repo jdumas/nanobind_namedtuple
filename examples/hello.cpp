@@ -27,11 +27,17 @@ struct Point {
 
 struct Empty {};
 
+// Namespaced record: bound with NB_NAMED_TUPLE_AS because "geom::Vec3" is
+// not a valid Python class name.
+namespace geom {
 struct Vec3 {
     float x;
     float y;
     float z;
 };
+} // namespace geom
+
+using geom::Vec3;
 
 struct Payload {
     nb::object obj;
@@ -58,27 +64,32 @@ struct Polyline {
     std::optional<float> width;
 };
 
-NB_NAMED_TUPLE(Color, "Color", NB_NT_FIELD(r), NB_NT_FIELD(g), NB_NT_FIELD(b))
+NB_NAMED_TUPLE(Color, r, g, b)
 
 NB_NAMED_TUPLE_EX(
-    Point, "Point", nbnt::field<&Point::x>("x"), nbnt::field<&Point::y>("y"),
-    nbnt::field<&Point::label>("label").default_(std::string{})
+    Point, "Point", nbnt::field<&Point::x>("x").doc("X coordinate."), nbnt::field<&Point::y>("y"),
+    nbnt::field<&Point::label>("label").default_(std::string{}).doc("Display label.")
 )
 
-NB_NAMED_TUPLE(Empty, "Empty")
+NB_NAMED_TUPLE(Empty)
 
-NB_NAMED_TUPLE(Vec3, "Vec3", NB_NT_FIELD(x), NB_NT_FIELD(y), NB_NT_FIELD(z))
+NB_NAMED_TUPLE_AS(geom::Vec3, "Vec3", x, y, z)
 
-NB_NAMED_TUPLE(Payload, "Payload", NB_NT_FIELD(obj))
+NB_NAMED_TUPLE(Payload, obj)
 
-NB_NAMED_TUPLE(Pixel, "Pixel", NB_NT_FIELD(position), NB_NT_FIELD(color))
+NB_NAMED_TUPLE(Pixel, position, color)
 
 NB_NAMED_TUPLE_EX(
     Tagged, "Tagged", nbnt::field<&Tagged::value>("value"),
-    nbnt::field<&Tagged::tag>("tag").default_(std::optional<int>{})
+    nbnt::field<&Tagged::tag>("tag").doc("Optional integer tag.").default_(std::optional<int>{})
 )
 
-NB_NAMED_TUPLE(Polyline, "Polyline", NB_NT_FIELD(points), NB_NT_FIELD(width))
+NB_NAMED_TUPLE(Polyline, points, width)
+
+// Compile-only coverage for the zero-field NB_NAMED_TUPLE_AS form; the type
+// is deliberately not registered with the module.
+struct EmptyAs {};
+NB_NAMED_TUPLE_AS(EmptyAs, "EmptyAs")
 
 NB_MODULE(nbnt_example_hello, m) {
     m.doc() = "Minimal nanobind extension used by the nanobind_namedtuple test suite.";
@@ -86,7 +97,7 @@ NB_MODULE(nbnt_example_hello, m) {
     m.def("add", [](int a, int b) { return a + b; });
 
     nbnt::bind_namedtuple<Color>(m);
-    nbnt::bind_namedtuple<Point>(m);
+    nbnt::bind_namedtuple<Point>(m, "A 2D point with an optional display label.");
     nbnt::bind_namedtuple<Empty>(m);
     nbnt::bind_namedtuple<Vec3>(m);
     nbnt::bind_namedtuple<Payload>(m);
